@@ -33,3 +33,4 @@ decoys/*
 !decoys/.gitkeep
 
 # ── Reports (generated PDFs) ──────────────────────────────
+tripwire.zip
