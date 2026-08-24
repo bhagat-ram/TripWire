@@ -1,12 +1,13 @@
-import { LayoutDashboard, Activity, ShieldAlert, Radar, Zap, SlidersHorizontal } from "lucide-react";
+import { LayoutDashboard, Activity, GitBranch, ShieldAlert, Radar, Zap, SlidersHorizontal } from "lucide-react";
 
 /**
  * Real navigation, not a placeholder menu: each item jumps (smooth-scroll)
  * to a section that already exists and does real work on this dashboard —
- * Overview, Live activity, Incidents (IncidentQueue), Detection
- * (DetectionPanel's thresholds), Response (ResponseBar's suspend/kill/lock).
- * "Automation rules" opens the existing settings modal instead of scrolling,
- * since that's a modal, not a page section.
+ * Overview, Live activity, Analysis (the live folder/file tree diagram),
+ * Incidents (IncidentQueue), Detection (DetectionPanel's thresholds),
+ * Response (ResponseBar's suspend/kill/lock). "Automation rules" opens the
+ * existing settings modal instead of scrolling, since that's a modal, not
+ * a page section.
  *
  * This is deliberately built as a single-page scroll-spy nav rather than
  * real routes — the dashboard is one page today. If/when Detection,
@@ -18,6 +19,7 @@ import { LayoutDashboard, Activity, ShieldAlert, Radar, Zap, SlidersHorizontal }
 const SECTIONS = [
   { id: "section-overview", label: "Overview", icon: LayoutDashboard },
   { id: "section-activity", label: "Live activity", icon: Activity },
+  { id: "section-analysis", label: "Analysis", icon: GitBranch },
   { id: "section-incidents", label: "Incidents", icon: ShieldAlert, badge: "openCases" },
   { id: "section-detection", label: "Detection", icon: Radar },
   { id: "section-response", label: "Response", icon: Zap, badge: "mode" },
