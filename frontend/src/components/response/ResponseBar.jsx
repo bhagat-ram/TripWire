@@ -1,4 +1,4 @@
-import { Check, Ban, Skull, WifiOff, ArrowUpRight, ShieldOff, FileDown } from "lucide-react";
+import { Check, Ban, Skull, WifiOff, ArrowUpRight, ShieldOff, FileDown, ShieldAlert } from "lucide-react";
 import { downloadIncidentReport } from "../../data/incidentReport";
 
 const STATUS_LABEL = {
@@ -19,8 +19,14 @@ const STATUS_LABEL = {
  * report" always actually does something (a file download) regardless of
  * dry-run.
  */
-export function ResponseBar({ incident, events, onRespond, lastActionResult }) {
+export function ResponseBar({ incident, events, onRespond, lastActionResult, health }) {
   const isOpenCase = incident && (incident.status === "open" || incident.status === "escalated");
+  // Same "default to safe until known" logic as the Topbar dry-run pill.
+  const dryRun = health?.dry_run !== false;
+  // Set the moment Kill/Suspend is clicked, cleared only by a real
+  // response_ack from the backend — see respondToIncident (incidents.js)
+  // and onResponseAck (useTripwireConnection.js).
+  const isPending = Boolean(incident?.pendingAction);
 
   return (
     <section className="response-bar">
@@ -28,6 +34,13 @@ export function ResponseBar({ incident, events, onRespond, lastActionResult }) {
         <strong>Response</strong>
         <span>{incident ? STATUS_LABEL[incident.status] : "No case selected"}</span>
       </div>
+
+      {dryRun && (
+        <span className="dryrun-warning-flag" title="Panic Mode is in dry-run — Kill and Suspend will only be logged, not actually sent, until you arm live mode from the top bar.">
+          <ShieldAlert size={11} />
+          Dry-run — Kill/Suspend won't actually act
+        </span>
+      )}
 
       {lastActionResult && (
         <div className="response-transition">
@@ -77,18 +90,22 @@ export function ResponseBar({ incident, events, onRespond, lastActionResult }) {
         </button>
 
         <button
-          className="secondary-button"
-          disabled={!isOpenCase}
+          className={`secondary-button ${dryRun && isOpenCase ? "dryrun-armed-button" : ""}`}
+          disabled={!isOpenCase || isPending}
           onClick={() => onRespond(incident.id, "kill")}
+          title={dryRun ? "Dry-run — this will only log, not actually kill" : "Sends SIGTERM to the process for real"}
         >
           <Skull size={11} />
-          Kill process
+          {incident?.pendingAction === "kill"
+            ? "Killing…"
+            : `Kill process${dryRun && isOpenCase ? " (dry-run)" : ""}`}
         </button>
 
         <button
-          className={`primary-button ${!isOpenCase && incident ? "contained-button" : ""}`}
-          disabled={!isOpenCase}
+          className={`primary-button ${!isOpenCase && incident ? "contained-button" : ""} ${dryRun && isOpenCase ? "dryrun-armed-button" : ""}`}
+          disabled={!isOpenCase || isPending}
           onClick={() => onRespond(incident.id, "suspend")}
+          title={isOpenCase ? (dryRun ? "Dry-run — this will only log, not actually suspend" : "Suspends the process for real") : undefined}
         >
           {incident && !isOpenCase ? (
             <>
@@ -98,7 +115,9 @@ export function ResponseBar({ incident, events, onRespond, lastActionResult }) {
           ) : (
             <>
               <Ban size={11} />
-              Suspend process
+              {incident?.pendingAction === "suspend"
+                ? "Suspending…"
+                : `Suspend process${dryRun && isOpenCase ? " (dry-run)" : ""}`}
             </>
           )}
         </button>

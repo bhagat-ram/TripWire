@@ -26,6 +26,7 @@ class Candidate:
     name: str
     parent_pid: Optional[int]
     parent_name: Optional[str]
+    create_time: float = 0.0
 
 
 class ProcessSnapshotter:
@@ -50,19 +51,21 @@ class ProcessSnapshotter:
 
     def _take_snapshot(self) -> dict[int, Candidate]:
         snap = {}
-        for p in psutil.process_iter(attrs=["pid", "name", "ppid"]):
+        for p in psutil.process_iter(attrs=["pid", "name", "ppid", "create_time"]):
             try:
                 info = p.info
                 pid = info["pid"]
                 name = info["name"] or "unknown"
                 ppid = info.get("ppid")
+                create_time = info.get("create_time") or 0.0
                 parent_name = None
                 if ppid:
                     try:
                         parent_name = psutil.Process(ppid).name()
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         parent_name = None
-                snap[pid] = Candidate(pid=pid, name=name, parent_pid=ppid, parent_name=parent_name)
+                snap[pid] = Candidate(pid=pid, name=name, parent_pid=ppid,
+                                       parent_name=parent_name, create_time=create_time)
             except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                 continue  # process vanished mid-iteration — never let this crash the loop
         return snap
@@ -156,9 +159,20 @@ def attribute_event(
         }
 
     # Ambiguous: multiple plausible processes touched the window.
-    # Never silently pick one — report the best-guess (most recently seen)
-    # but flag it explicitly so the dashboard can show "ambiguous".
-    best_guess = candidates[0]
+    # Never silently pick one — report the best-guess but flag it explicitly
+    # so the dashboard can show "ambiguous".
+    #
+    # The best-guess heuristic must be a real signal, not set iteration
+    # order (candidates came from a Python set — that order is hash-based,
+    # not recency, and previously silently favored whichever PID happened
+    # to land first — e.g. a long-running dev-tooling process like Vite,
+    # every single time, regardless of who actually touched the decoy).
+    #
+    # Process creation time is a much better signal here: a process that
+    # just spawned is far more likely to be the actual toucher than a
+    # process that's been running the whole session (dev server, shell,
+    # editor, etc.) and merely happened to be alive in the same window.
+    best_guess = max(candidates, key=lambda c: c.create_time)
     return {
         "pid": best_guess.pid,
         "process_name": best_guess.name,

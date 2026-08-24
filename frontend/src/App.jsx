@@ -26,12 +26,16 @@ function App() {
     lastArrivedId,
     lastActionResult,
     triggerSimulation,
+    stopSimulation,
+    simulationRunning,
+    simulationError,
     clearSimulation,
     respondToIncident,
     addIncidentNote,
     removeIncident,
     clearResolved,
     removeEvent,
+    clearAllEvents,
     applyThresholds,
     setDryRun,
   } = useTripwireConnection();
@@ -93,6 +97,7 @@ function App() {
         health={health}
         hasOpenCase={hasOpenCase}
         allContainedOrDismissed={allContainedOrDismissed}
+        onSelectEvent={openEventInDrawer}
       />
 
       <main className="main-content">
@@ -118,8 +123,12 @@ function App() {
           focusEventId={focusEvent?.id}
           onSelectEvent={openEventInDrawer}
           onSimulate={triggerSimulation}
+          onStopSimulate={stopSimulation}
+          simulationRunning={simulationRunning}
+          simulationError={simulationError}
           onReset={clearSimulation}
           onRemoveEvent={removeEvent}
+          onClearAllEvents={clearAllEvents}
           severityFilter={severityFilter}
           onToggleSeverityFilter={toggleSeverityFilter}
           density={density}
@@ -148,6 +157,7 @@ function App() {
           events={events}
           onRespond={respondToIncident}
           lastActionResult={lastActionResult}
+          health={health}
         />
 
         {drawerOpen && (

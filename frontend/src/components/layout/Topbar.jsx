@@ -19,7 +19,7 @@ const WAVEFORM_PATHS = {
     "M0,10 L10,10 L13,1 L16,19 L19,2 L22,10 L40,10 L43,0 L46,20 L49,1 L52,10 L70,10 L73,2 L76,18 L79,3 L82,10 L100,10",
 };
 
-export function Topbar({ hasOpenCase, allContainedOrDismissed, posture, health, dryRunPending, onSetDryRun }) {
+export function Topbar({ hasOpenCase, allContainedOrDismissed, posture, health, dryRunPending, onSetDryRun, onOpenSettings }) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const dryRun = health?.dry_run !== false; // default to dry-run assumed safe until known
 
@@ -72,7 +72,7 @@ export function Topbar({ hasOpenCase, allContainedOrDismissed, posture, health, 
             {dryRun ? "Dry-run" : "Live"}
           </button>
 
-          <button className="icon-button">
+          <button className="icon-button" onClick={onOpenSettings} title="Automated response rules" aria-label="Settings">
             <Settings size={15} />
           </button>
         </div>
