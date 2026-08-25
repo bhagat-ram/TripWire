@@ -5,7 +5,15 @@ WebSocket + REST, with panic on "critical".
 
 WebSocket events emitted (frozen contract — frontend depends on this):
   "tripwire_event"  → enriched event dict (see _enrich below)
-  "panic_mode"      → {suspended, killed, dry_run, actions}
+  "panic_mode"      → {suspended, killed, dry_run, actions, mitigation_status,
+                        event_id, escalation, escalation_reason?}
+                       mitigation_status is "auto_mitigated" (a real, non-dry-run
+                       action actually succeeded) or "requires_manual" (dry-run,
+                       nothing succeeded, or the rule for this severity is
+                       monitor-only). escalation=true means this panic_mode was
+                       fired by the auto-escalate-to-kill path (a PID kept
+                       touching decoys after being suspended), not the initial
+                       critical-severity response.
   "response_ack"    → {event_id, action, status, dry_run, ts}
   "health_tick"     → watcher health, emitted every 5 s
 
@@ -16,7 +24,12 @@ REST endpoints:
   GET  /audit[?limit=N]        panic_actions.log as JSON
   GET  /report[?limit=N]       generate + download a PDF incident report
   POST /action                 trigger a manual response (suspend/kill/lock)
+  POST   /simulate              launch a real simulator.py subprocess (default mode: persist)
+  GET    /simulate              list tracked simulator subprocesses + alive state
+  DELETE /simulate/<pid>        stop a tracked simulator subprocess
   POST /config/thresholds      update warning/critical thresholds live
+  GET  /config/auto-response   current per-severity auto-response rules + escalation threshold
+  POST /config/auto-response   update auto-response rules and/or escalation threshold live
   POST /config/dry-run         toggle dry-run (requires {"confirm": true})
   GET    /cases                list persisted case state
   POST   /cases                upsert a case (body: full case dict, needs id + key)
@@ -36,6 +49,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -62,7 +77,8 @@ import config
 from events import Event, EventStore
 from attribution import ProcessSnapshotter, attribute_event
 from classifier import Classifier
-from panic import PanicController, LOG_PATH as PANIC_LOG_PATH
+from panic import PanicController, LOG_PATH as PANIC_LOG_PATH, mitigation_status as panic_mitigation_status
+import panic as panic_mod
 from watcher import Watcher
 from report import generate_report
 import decoy_gen
@@ -148,7 +164,16 @@ class TripwireServer:
         @self.app.after_request
         def _add_cors_headers(response):
             response.headers["Access-Control-Allow-Origin"] = "*"
-            response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+            # Must list every method any route actually uses, or the browser's
+            # CORS preflight silently blocks it before the request is ever
+            # sent. DELETE was missing here — every /events/<id>, /events,
+            # /cases/<id>, /cases DELETE call from the dashboard was being
+            # blocked at the browser level. Locally the UI still looked like
+            # it removed the row (React state updates regardless of whether
+            # the network call succeeds), but the backend never actually
+            # deleted anything, so a refresh (or any refetch) brought it
+            # right back — looking exactly like "clearing" did nothing.
+            response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
             response.headers["Access-Control-Allow-Headers"] = "Content-Type"
             return response
 
@@ -162,6 +187,14 @@ class TripwireServer:
 
         self._last_event_ts: Optional[float] = None
         self._state_lock = threading.Lock()
+
+        # Real simulator.py subprocesses launched via POST /simulate (the
+        # dashboard's "Simulate detection" button), keyed by pid, so
+        # DELETE /simulate/<pid> can stop them and stop() can clean up any
+        # still-running ones (mainly persist mode, which otherwise runs
+        # forever) instead of leaking demo processes.
+        self._sim_procs: dict[int, subprocess.Popen] = {}
+        self._sim_lock = threading.Lock()
 
         # Health ticker — emits "health_tick" every 5 s so the dashboard
         # top bar shows live watcher state without polling /health.
@@ -201,16 +234,46 @@ class TripwireServer:
             with self._state_lock:
                 self._last_event_ts = ts
 
-            if result.severity == "critical":
-                suspects = [attrib["pid"]] if attrib["pid"] is not None else []
-                panic_result = self.panic.trigger(suspects)
+            pid = attrib["pid"]
+
+            # Repeat-offense check FIRST, on every touch (any severity): if this
+            # PID was already suspended by an earlier critical hit and it's
+            # still generating touches, that's live evidence the suspend didn't
+            # actually stop it (dry-run / bypass / failed). Auto-escalate to
+            # kill once it crosses the threshold — don't wait for another
+            # critical classification, which may never come if the window
+            # already emptied out.
+            if pid is not None:
+                post_count = self.panic.note_post_suspend_touch(pid)
+                if post_count and self.panic.should_escalate_to_kill(pid):
+                    kill_result = self.panic.escalate_to_kill(pid)
+                    self.socketio.emit("panic_mode", {
+                        "suspended":  [],
+                        "killed":     self.panic._killed_pid,
+                        "dry_run":    self.panic.dry_run,
+                        "actions":    [kill_result.to_dict()],
+                        "mitigation_status": panic_mod.mitigation_status([kill_result], self.panic.dry_run),
+                        "event_id":   ev_id,
+                        "escalation": True,
+                        "escalation_reason": (
+                            f"pid {pid} touched decoys {post_count}x after being suspended — "
+                            f"auto-escalating to kill"
+                        ),
+                    })
+
+            rules = config.AUTO_RESPONSE_RULES.get(result.severity, [])
+            if rules and rules != ["monitor"]:
+                suspects = [pid] if pid is not None else []
+                panic_result = self.panic.trigger(suspects, rules=rules)
                 # panic.trigger already returns "actions" as a list of dicts
                 self.socketio.emit("panic_mode", {
                     "suspended":  panic_result["suspended"],
                     "killed":     panic_result["killed"],
                     "dry_run":    panic_result["dry_run"],
                     "actions":    panic_result.get("actions", []),
+                    "mitigation_status": panic_result.get("mitigation_status"),
                     "event_id":   ev_id,   # link back to the triggering event
+                    "escalation": False,
                 })
 
         except Exception as e:
@@ -374,6 +437,144 @@ class TripwireServer:
             config.CRITICAL_TOUCH_THRESHOLD = c
             return jsonify({"warning": w, "critical": c, "ok": True})
 
+        _VALID_ACTIONS = {"monitor", "suspend", "kill", "lock"}
+        _VALID_SEVERITIES = {"info", "warning", "critical"}
+
+        @self.app.get("/config/auto-response")
+        def get_auto_response():
+            """Current per-severity auto-response rules + the auto-escalate-to-kill
+            threshold, so the dashboard can render/edit them instead of them only
+            being a config.py constant."""
+            return jsonify({
+                "rules": config.AUTO_RESPONSE_RULES,
+                "escalate_to_kill_after_touches": config.AUTO_ESCALATE_TO_KILL_AFTER_TOUCHES,
+            })
+
+        @self.app.post("/config/auto-response")
+        def set_auto_response():
+            """
+            Live-update auto-response rules and/or the escalation threshold.
+            Body (either or both):
+              { "rules": {"info": [...], "warning": [...], "critical": [...]},
+                "escalate_to_kill_after_touches": int }
+            Each rule list may only contain: monitor, suspend, kill, lock.
+            "monitor" means alert-only; combine it with others is redundant
+            but harmless (monitor contributes no action either way).
+            """
+            body = request.get_json(silent=True) or {}
+            rules = body.get("rules")
+            threshold = body.get("escalate_to_kill_after_touches")
+
+            if rules is not None:
+                if not isinstance(rules, dict) or set(rules.keys()) - _VALID_SEVERITIES:
+                    return jsonify({"error": f"rules keys must be a subset of {sorted(_VALID_SEVERITIES)}"}), 400
+                for sev, actions in rules.items():
+                    if not isinstance(actions, list) or any(a not in _VALID_ACTIONS for a in actions):
+                        return jsonify({
+                            "error": f"rules[{sev!r}] must be a list drawn from {sorted(_VALID_ACTIONS)}"
+                        }), 400
+                config.AUTO_RESPONSE_RULES = {**config.AUTO_RESPONSE_RULES, **rules}
+
+            if threshold is not None:
+                if not (isinstance(threshold, int) and threshold >= 1):
+                    return jsonify({"error": "escalate_to_kill_after_touches must be an int ≥ 1"}), 400
+                config.AUTO_ESCALATE_TO_KILL_AFTER_TOUCHES = threshold
+
+            return jsonify({
+                "rules": config.AUTO_RESPONSE_RULES,
+                "escalate_to_kill_after_touches": config.AUTO_ESCALATE_TO_KILL_AFTER_TOUCHES,
+                "ok": True,
+            })
+
+        _SIMULATE_MODES = {"trickle", "sweep", "flood", "persist"}
+
+        @self.app.post("/simulate")
+        def start_simulate():
+            """
+            The dashboard's "Simulate detection" button. Launches a REAL
+            simulator.py subprocess against the real decoy files instead of
+            injecting canned demo events into the frontend — so the touches
+            actually flow through watcher -> attribution -> classifier ->
+            panic exactly like a genuine intrusion would, visible over the
+            same tripwire_event / panic_mode websocket stream every other
+            event uses.
+
+            Body (all optional):
+              { "mode": "persist" | "sweep" | "trickle" | "flood",  (default "persist")
+                "sleep": float,   # per-touch gap seconds (trickle/sweep/persist)
+                "count": int,     # touches (trickle/sweep) or total (flood)
+                "max_runtime": float }  # persist only — safety cap in seconds
+
+            Defaults to "persist" on purpose: sweep/trickle/flood finish and
+            exit almost immediately, so by the time a critical classification
+            fires there's often nothing left for panic mode to act on.
+            persist keeps running — like real malware would — so Suspend/
+            Kill/Auto-escalate have a live process to actually contain, and
+            you can watch that containment happen instead of just reading a
+            dry-run log line.
+
+            Returns immediately with the subprocess pid; it does not block
+            waiting for the simulator to finish (persist mode never finishes
+            on its own). Stop it with DELETE /simulate/<pid>, or let panic
+            mode's own suspend/kill actually stop it once it trips a
+            detection — the intended demo path.
+            """
+            body = request.get_json(silent=True) or {}
+            mode = body.get("mode", "persist")
+            if mode not in _SIMULATE_MODES:
+                return jsonify({"error": f"mode must be one of {sorted(_SIMULATE_MODES)}"}), 400
+
+            sim_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "simulator.py")
+            cmd = [sys.executable, sim_path, "--mode", mode]
+            if body.get("sleep") is not None:
+                cmd += ["--sleep", str(body["sleep"])]
+            if body.get("count") is not None:
+                cmd += ["--count", str(body["count"])]
+            if mode == "persist" and body.get("max_runtime") is not None:
+                cmd += ["--max-runtime", str(body["max_runtime"])]
+
+            try:
+                proc = subprocess.Popen(cmd, cwd=os.path.dirname(sim_path))
+            except Exception as e:
+                return jsonify({"error": f"failed to launch simulator: {e}"}), 500
+
+            with self._sim_lock:
+                self._sim_procs[proc.pid] = proc
+
+            return jsonify({"pid": proc.pid, "mode": mode, "ok": True})
+
+        @self.app.get("/simulate")
+        def list_simulate():
+            """Currently tracked simulator subprocesses launched via POST
+            /simulate, and whether each is still running."""
+            with self._sim_lock:
+                items = [{"pid": pid, "alive": proc.poll() is None}
+                         for pid, proc in self._sim_procs.items()]
+            return jsonify({"processes": items})
+
+        @self.app.delete("/simulate/<int:pid>")
+        def stop_simulate(pid):
+            """Stop a simulator subprocess started via POST /simulate — mainly
+            needed for persist mode, which otherwise runs until something
+            (panic mode, or this) stops it. Distinct from panic.py's
+            suspend/kill: this is the dashboard's own "turn off the demo"
+            control, not a detection response, so it always actually stops
+            the process regardless of dry-run/allowlist state."""
+            with self._sim_lock:
+                proc = self._sim_procs.get(pid)
+            if proc is None:
+                return jsonify({"error": "no tracked simulator subprocess with that pid"}), 404
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=3)
+            with self._sim_lock:
+                self._sim_procs.pop(pid, None)
+            return jsonify({"pid": pid, "stopped": True, "ok": True})
+
         @self.app.post("/config/dry-run")
         def set_dry_run():
             """
@@ -478,6 +679,19 @@ class TripwireServer:
             self._health_thread.join(timeout=2)
         self.watcher.stop()
         self.snapshotter.stop()
+        # Don't leak simulator subprocesses (especially persist mode, which
+        # runs until something stops it) past the server's own lifetime.
+        with self._sim_lock:
+            procs = list(self._sim_procs.values())
+            self._sim_procs.clear()
+        for proc in procs:
+            if proc.poll() is None:
+                proc.terminate()
+        for proc in procs:
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
         if self._orig_decoy_placements is not None:
             config.DECOY_PLACEMENTS = self._orig_decoy_placements
             config.MANIFEST_PATH    = self._orig_manifest_path
@@ -507,7 +721,7 @@ def _run_self_test():
 
     try:
         # 1 ── /health baseline ──────────────────────────────────────────────
-        print("[1/13] GET /health before any events ... ", end="", flush=True)
+        print("[1/14] GET /health before any events ... ", end="", flush=True)
         r = client.get("/health")
         b = r.get_json()
         assert r.status_code == 200
@@ -518,7 +732,7 @@ def _run_self_test():
         print(f"OK → {b}")
 
         # 2 ── synthetic event enrichment ────────────────────────────────────
-        print("[2/13] synthetic event enriches payload with placement + recommended_action ... ", end="", flush=True)
+        print("[2/14] synthetic event enriches payload with placement + recommended_action ... ", end="", flush=True)
         fake_path = os.path.join(config.HOME, "Desktop", "Passwords_Backup.txt")
         srv._on_fs_event("modify", fake_path, time.time())
         assert srv.store.count_events() == 1
@@ -531,14 +745,14 @@ def _run_self_test():
         print(f"OK → severity={payload['severity']}, recommendation={payload['recommended_action']!r}")
 
         # 3 ── dead-letter on bad event_type ─────────────────────────────────
-        print("[3/13] malformed event dead-lettered, pipeline stays alive ... ", end="", flush=True)
+        print("[3/14] malformed event dead-lettered, pipeline stays alive ... ", end="", flush=True)
         srv._on_fs_event("NOT_VALID", fake_path, time.time())
         assert srv.store.dead_letter_count() == 1
         assert srv.store.count_events() == 1   # bad event not stored as real
         print("OK")
 
         # 4 ── critical burst triggers panic_mode emit ────────────────────────
-        print("[4/13] critical burst emits panic_mode with event_id link ... ", end="", flush=True)
+        print("[4/14] critical burst emits panic_mode with event_id link ... ", end="", flush=True)
         for i in range(config.CRITICAL_TOUCH_THRESHOLD + 2):
             srv._on_fs_event("modify", fake_path, time.time())
         panic_emits = [(n, p) for n, p in srv.socketio_emitted if n == "panic_mode"]
@@ -549,7 +763,7 @@ def _run_self_test():
         print(f"OK → dry_run={pm['dry_run']}, event_id={pm['event_id']}")
 
         # 5 ── GET /events ───────────────────────────────────────────────────
-        print("[5/13] GET /events returns enriched history ... ", end="", flush=True)
+        print("[5/14] GET /events returns enriched history ... ", end="", flush=True)
         r2 = client.get("/events?limit=5")
         evs = r2.get_json()
         assert isinstance(evs, list) and len(evs) > 0
@@ -557,7 +771,7 @@ def _run_self_test():
         print(f"OK → {len(evs)} events returned")
 
         # 6 ── POST /config/dry-run requires confirm ──────────────────────────
-        print("[6/13] POST /config/dry-run refuses to arm without confirm ... ", end="", flush=True)
+        print("[6/14] POST /config/dry-run refuses to arm without confirm ... ", end="", flush=True)
         r3 = client.post("/config/dry-run",
                          data=json.dumps({"dry_run": False}),
                          content_type="application/json")
@@ -574,7 +788,7 @@ def _run_self_test():
         print("OK → armed with confirm, disarmed again")
 
         # 7 ── POST /config/thresholds live update ───────────────────────────
-        print("[7/13] POST /config/thresholds updates live ... ", end="", flush=True)
+        print("[7/14] POST /config/thresholds updates live ... ", end="", flush=True)
         r5 = client.post("/config/thresholds",
                          data=json.dumps({"warning": 2, "critical": 4}),
                          content_type="application/json")
@@ -584,7 +798,7 @@ def _run_self_test():
         print(f"OK → warning={config.WARNING_TOUCH_THRESHOLD}, critical={config.CRITICAL_TOUCH_THRESHOLD}")
 
         # 8 ── POST /action lock (this used to 500: lock_file() didn't exist) ──
-        print("[8/13] POST /action {action: lock} succeeds (dry-run) ... ", end="", flush=True)
+        print("[8/14] POST /action {action: lock} succeeds (dry-run) ... ", end="", flush=True)
         r6 = client.post("/action",
                          data=json.dumps({"action": "lock"}),
                          content_type="application/json")
@@ -593,7 +807,7 @@ def _run_self_test():
         print(f"OK → {r6.get_json()}")
 
         # 9 ── GET /report returns a real PDF, even with just the events above ──
-        print("[9/13] GET /report returns a downloadable PDF ... ", end="", flush=True)
+        print("[9/14] GET /report returns a downloadable PDF ... ", end="", flush=True)
         r7 = client.get("/report")
         assert r7.status_code == 200
         assert r7.mimetype == "application/pdf"
@@ -601,7 +815,7 @@ def _run_self_test():
         print(f"OK → {len(r7.data)} bytes")
 
         # 10 ── /cases CRUD round-trip through the REST layer ──────────────────
-        print("[10/13] /cases: POST upserts, GET lists/fetches, DELETE removes, 404 on missing ... ", end="", flush=True)
+        print("[10/14] /cases: POST upserts, GET lists/fetches, DELETE removes, 404 on missing ... ", end="", flush=True)
         case_body = {
             "id": "case-1", "key": "sim_attack.exe::4821", "status": "open",
             "title": "Suspicious activity — sim_attack.exe", "severity": "Critical",
@@ -635,7 +849,7 @@ def _run_self_test():
         print("OK")
 
         # 11 ── DELETE /cases wipes everything (full Reset) ────────────────────
-        print("[11/13] DELETE /cases clears all persisted cases ... ", end="", flush=True)
+        print("[11/14] DELETE /cases clears all persisted cases ... ", end="", flush=True)
         client.post("/cases", data=json.dumps({**case_body, "id": "case-a"}), content_type="application/json")
         client.post("/cases", data=json.dumps({**case_body, "id": "case-b", "key": "other::99"}), content_type="application/json")
         assert len(client.get("/cases").get_json()) == 2
@@ -646,7 +860,7 @@ def _run_self_test():
         print("OK")
 
         # 12 ── DELETE /events wipes all, or only rows older than a cutoff ──────
-        print("[12/13] DELETE /events clears history, respects ?before cutoff ... ", end="", flush=True)
+        print("[12/14] DELETE /events clears history, respects ?before cutoff ... ", end="", flush=True)
         srv.store.insert_event(Event(event_type="read", file_path="decoys/old.txt", timestamp=100.0))
         srv.store.insert_event(Event(event_type="read", file_path="decoys/new.txt", timestamp=time.time()))
         before_clear_count = srv.store.count_events()
@@ -666,7 +880,7 @@ def _run_self_test():
         print(f"OK → cutoff removed 1, full wipe removed the rest")
 
         # 13 ── DELETE /events/<id> removes exactly one row from the feed ──────
-        print("[13/13] DELETE /events/<id> clears a single row, 404s on a missing/bad id ... ", end="", flush=True)
+        print("[13/14] DELETE /events/<id> clears a single row, 404s on a missing/bad id ... ", end="", flush=True)
         eid_a = srv.store.insert_event(Event(event_type="read", file_path="decoys/a.txt", timestamp=time.time()))
         eid_b = srv.store.insert_event(Event(event_type="read", file_path="decoys/b.txt", timestamp=time.time()))
         assert srv.store.count_events() == 2
@@ -682,6 +896,15 @@ def _run_self_test():
 
         r21 = client.delete("/events/not-an-id")
         assert r21.status_code == 404  # Flask's <int:...> converter rejects non-numeric ids
+        print("OK")
+
+        # 14 ── CORS actually allows DELETE (regression guard for the bug where
+        #       the after_request hook hardcoded GET/POST/OPTIONS and silently
+        #       blocked every delete/reset call at the browser level) ─────────
+        print("[14/14] CORS header allows DELETE, so browser-side deletes aren't silently blocked ... ", end="", flush=True)
+        r22 = client.delete("/events")
+        allowed_methods = r22.headers.get("Access-Control-Allow-Methods", "")
+        assert "DELETE" in allowed_methods, f"DELETE missing from Access-Control-Allow-Methods: {allowed_methods!r}"
         print("OK")
 
         print(f"\n✓ All checks passed.  (flask_socketio installed: {_HAVE_SOCKETIO})")

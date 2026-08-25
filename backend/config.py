@@ -141,6 +141,27 @@ ALLOWLIST_PROCESS_NAMES = {"explorer.exe", "finder", "systemd", "launchd"}
 if TRIPWIRE_DEV_MODE:
     ALLOWLIST_PROCESS_NAMES |= {"python", "python3"}
 
+# ─── Auto-response rules (Stage 5.5) ──────────────────────────────────────
+# Per-severity automatic response, checked the moment a touch classifies at
+# that severity. "monitor" means alert-only — the dashboard/incident queue
+# still lights up, but no containment action fires on its own; an analyst
+# has to click Suspend/Kill/Lock manually. Editable live via
+# POST /config/auto-response (never edit ALLOWLIST/thresholds by hand while
+# the server is running — go through that endpoint so the change is logged).
+AUTO_RESPONSE_RULES: dict[str, list[str]] = {
+    "info":     ["monitor"],
+    "warning":  ["monitor"],
+    "critical": ["suspend", "lock"],
+}
+
+# A single suspend/lock is often not enough against something that keeps
+# running: real malware doesn't stop just because a decoy sweep tripped
+# once. If a PID that panic.py already suspended keeps generating touches
+# afterward (suspend failed, was a dry-run, or the process caught/ignored
+# it), auto-escalate straight to kill once it crosses this many additional
+# post-suspend touches — no analyst click required.
+AUTO_ESCALATE_TO_KILL_AFTER_TOUCHES = 3
+
 # ─── Server (Stage 6) ─────────────────────────────────────────────────────
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT  = 5050

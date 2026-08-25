@@ -26,6 +26,7 @@
   /* Borders */
   --border-hairline: #dde4ef;
   --border-strong: #c5cede;
+  --tree-line: #7c8aa3;
 
   /* Text — deep navy ink instead of flat black */
   --text-primary: #101828;
@@ -88,7 +89,7 @@ button {
 .sidebar {
   position: fixed;
   inset: 0 auto 0 0;
-  width: 166px;
+  width: 212px;
 
   display: flex;
   flex-direction: column;
@@ -201,6 +202,118 @@ button {
   font-size: 8px;
 }
 
+/* =========================
+   SIDEBAR — WORKFLOW NAV
+========================= */
+
+.sidebar-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-bottom: 14px;
+}
+
+.nav-item {
+  height: 26px;
+
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  padding: 0 8px;
+
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 600;
+  text-align: left;
+
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.nav-item svg {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  transition: color 0.12s ease;
+}
+
+.nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.nav-item:hover svg {
+  color: var(--text-primary);
+}
+
+.nav-item.active {
+  background: var(--safe-dim);
+  color: var(--safe-dot);
+}
+
+.nav-item.active svg {
+  color: var(--safe-dot);
+}
+
+.nav-item-modal {
+  margin-top: 5px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-hairline);
+  border-radius: 0;
+}
+
+.nav-badge {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 1px 6px;
+
+  border-radius: 20px;
+  background: var(--bg-inset);
+
+  color: var(--text-quiet);
+  font-family: var(--font-mono);
+  font-size: 7px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.nav-badge-danger {
+  background: var(--accent-critical-dim);
+  color: var(--accent-critical);
+}
+
+.nav-badge-live {
+  background: var(--accent-critical-dim);
+  color: var(--accent-critical);
+}
+
+/* =========================
+   SIDEBAR — TREE "LIVE" FLAG
+========================= */
+
+.tree-live-flag {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+
+  padding: 0 6px;
+  margin-bottom: 7px;
+
+  color: var(--accent-critical);
+  font-size: 7px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tree-live-flag svg {
+  animation: idle-breathe 1.8s ease-in-out infinite;
+}
+
 .sidebar-bottom {
   margin-top: auto;
   padding-top: 10px;
@@ -246,8 +359,8 @@ button {
 ========================= */
 
 .main-content {
-  width: calc(100% - 166px);
-  margin-left: 166px;
+  width: calc(100% - 212px);
+  margin-left: 212px;
   padding: 18px 20px 40px;
 }
 
@@ -481,6 +594,169 @@ button {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* =========================
+   SETTINGS MODAL
+========================= */
+
+.settings-modal {
+  width: 420px;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 60px);
+  overflow-y: auto;
+
+  padding: 18px;
+
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-surface);
+
+  box-shadow: 0 20px 60px rgba(16, 24, 40, 0.18);
+}
+
+.settings-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.settings-modal-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.settings-modal-intro {
+  margin: 0 0 16px;
+  color: var(--text-secondary);
+  font-size: 9px;
+  line-height: 1.6;
+}
+
+.settings-rules-table {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.settings-rule-row {
+  padding: 10px 12px;
+
+  border: 1px solid var(--border-hairline);
+  border-radius: 7px;
+  background: var(--bg-surface);
+}
+
+.settings-rule-severity {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.settings-rule-severity strong {
+  color: var(--text-primary);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.settings-rule-severity span {
+  color: var(--text-tertiary);
+  font-size: 8px;
+}
+
+.settings-rule-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.settings-action-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.settings-action-checkbox input[type="checkbox"] {
+  accent-color: var(--accent-critical);
+  cursor: pointer;
+}
+
+.settings-monitor-flag {
+  margin-left: auto;
+  padding: 2px 6px;
+
+  border-radius: 4px;
+  background: var(--bg-inset, rgba(16, 24, 40, 0.05));
+
+  color: var(--text-quiet);
+  font-size: 7px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.settings-escalate-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+
+  padding: 10px 12px;
+  margin-bottom: 4px;
+
+  border: 1px solid var(--border-hairline);
+  border-radius: 7px;
+}
+
+.settings-escalate-row label {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.settings-escalate-row > div:first-child span {
+  color: var(--text-tertiary);
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.settings-escalate-input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+
+  color: var(--text-tertiary);
+  font-size: 8px;
+}
+
+.settings-escalate-input input[type="number"] {
+  width: 48px;
+  padding: 4px 6px;
+
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--bg-surface);
+
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: center;
 }
 
 /* =========================
@@ -1203,6 +1479,28 @@ button.overview-card:hover {
   color: #ffffff;
 }
 
+.dryrun-warning-flag {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--accent-warning);
+  color: var(--accent-warning);
+  font-size: 7px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dryrun-armed-button {
+  border: 1px solid var(--accent-warning) !important;
+  box-shadow: inset 0 0 0 1px var(--accent-warning);
+}
+
+.dryrun-armed-button:hover:not(:disabled) {
+  border-color: var(--accent-warning) !important;
+}
+
 /* =========================
    ACTIVITY CONTROLS
 ========================= */
@@ -1296,7 +1594,10 @@ button.overview-card:hover {
   background: transparent;
   color: var(--text-quiet);
 
-  opacity: 0;
+  /* Fully visible at all times (not hover-only) — a subtle or hover-only
+     trigger is invisible on touch devices and was easy to miss even with
+     a mouse, which is why the delete option looked like it didn't exist. */
+  opacity: 0.85;
   cursor: pointer;
   transition: opacity 0.12s ease, background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
@@ -2192,6 +2493,17 @@ button.overview-card:hover {
   color: var(--text-tertiary);
 }
 
+.action-history-row.pending {
+  border-color: var(--accent-warning-border);
+  background: var(--accent-warning-dim);
+}
+
+.action-history-row.pending strong::after {
+  content: " (awaiting confirmation)";
+  color: var(--accent-warning);
+  font-weight: 500;
+}
+
 /* =========================
    DRAWER RESPONSE GRID
 ========================= */
@@ -2242,4 +2554,387 @@ button.overview-card:hover {
 
 .dismiss-button:hover:not(:disabled) {
   color: var(--accent-warning);
+}
+
+/* ── Added: mitigation status badge on incident cards ──────────────────── */
+/* Insert this block into index.css immediately before the existing
+   .incident-card-wrap rule (around line 1967). */
+
+.incident-card-mitigation {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+
+  margin-top: 4px;
+  padding: 2px 7px;
+
+  border-radius: 999px;
+  border: 1px solid var(--border-hairline);
+
+  font-size: 6.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.incident-card-mitigation.mitigation-auto {
+  background: var(--safe-dim);
+  border-color: rgba(37, 84, 214, 0.35);
+  color: var(--safe-dot);
+}
+
+.incident-card-mitigation.mitigation-manual {
+  background: var(--accent-warning-dim);
+  border-color: var(--accent-warning-border);
+  color: var(--accent-warning);
+}
+
+.incident-card-escalated-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+  padding-left: 5px;
+  border-left: 1px solid currentColor;
+  opacity: 0.85;
+}
+
+/* ── Added: Simulate detection / Stop simulation button states ─────────── */
+/* Insert this block into index.css right after the existing
+   .filter-button.active rule (around line 654). */
+
+.simulation-button-running {
+  border-color: var(--accent-critical-border);
+  background: var(--accent-critical-dim);
+  color: var(--accent-critical);
+}
+
+.simulation-button-running:hover {
+  background: var(--accent-critical-dim);
+  border-color: var(--accent-critical-border);
+  color: var(--accent-critical);
+}
+
+.simulation-error {
+  color: var(--accent-critical);
+  font-size: 7px;
+  font-weight: 600;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* =========================================================
+   ANALYSIS — LIVE FOLDER/FILE ORG-CHART DIAGRAM
+   (real GET /manifest placements joined against live events —
+   see data/manifestTree.js + components/analysis/FolderTreeDiagram.jsx)
+========================================================= */
+
+.analysis-panel {
+  margin: 0 24px 24px;
+  padding: 16px 18px 22px;
+
+  border: 1px solid var(--border-hairline);
+  border-radius: 10px;
+  background: var(--bg-surface);
+}
+
+.analysis-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.analysis-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.analysis-title > svg:first-child {
+  color: var(--text-tertiary);
+}
+
+.analysis-title .tree-live-flag {
+  margin-bottom: 0;
+  padding: 2px 7px;
+  border-radius: 20px;
+  background: var(--accent-critical-dim);
+}
+
+.analysis-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.analysis-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  width: 190px;
+  padding: 5px 8px;
+
+  border: 1px solid var(--border-hairline);
+  border-radius: 5px;
+  background: var(--bg-inset);
+
+  color: var(--text-quiet);
+}
+
+.analysis-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+
+  color: var(--text-primary);
+  font-size: 9px;
+  font-family: inherit;
+}
+
+.analysis-search input::placeholder {
+  color: var(--text-quiet);
+}
+
+.analysis-subtitle {
+  margin-bottom: 12px;
+  color: var(--text-tertiary);
+  font-size: 8px;
+}
+
+.tree-empty {
+  padding: 24px 6px;
+  color: var(--text-quiet);
+  font-size: 9px;
+  text-align: center;
+}
+
+/* ---------- org-chart diagram: 2D grid + measured SVG connectors ----------
+   Folders lay out in a real grid (wraps across rows — uses width AND
+   height, unlike a single-row org-chart strip) and connector lines are
+   drawn as measured SVG paths from the root box to each folder box's
+   actual on-screen position, so they stay correct regardless of which row
+   a folder wraps onto. Folder→file connections stay simple CSS since
+   files always sit directly under their own folder, no wrapping to solve. */
+
+.org-tree-wrapper {
+  overflow-x: auto;
+  padding: 4px 4px 10px;
+}
+
+.org-diagram {
+  position: relative;
+  padding: 6px 12px 4px;
+}
+
+.org-lines-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.org-line {
+  fill: none;
+  stroke-width: 1.5px;
+}
+
+.org-node-root {
+  position: relative;
+  z-index: 1;
+  margin: 0 auto;
+}
+
+.org-grid {
+  position: relative;
+  z-index: 1;
+
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 40px 24px;
+
+  margin-top: 40px;
+}
+
+.org-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.org-cell-stem {
+  width: 0;
+  height: 14px;
+  border-left: 1.5px solid var(--tree-line);
+}
+
+.org-cell-children {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+}
+
+/* ---------- node boxes ---------- */
+
+.org-node {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+
+  min-width: 118px;
+  max-width: 100%;
+  min-height: 38px;
+  padding: 9px 14px;
+
+  border: 1.5px solid var(--tree-line);
+  border-radius: 6px;
+  background: var(--bg-inset);
+
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+  white-space: nowrap;
+
+  cursor: default;
+  position: relative;
+  transition: filter 0.12s ease, transform 0.12s ease;
+}
+
+button.org-node {
+  cursor: pointer;
+  width: 100%;
+}
+
+.org-node-root {
+  width: auto;
+  background: #cfe3b8;
+  border-color: #8bab63;
+  color: #24391a;
+  font-size: 11px;
+  min-width: 150px;
+  padding: 10px 20px;
+}
+
+.org-node-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.org-node-meta {
+  color: inherit;
+  opacity: 0.65;
+  font-size: 7px;
+  font-weight: 600;
+  text-transform: none;
+}
+
+.org-node-badge {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  border-radius: 20px;
+  background: var(--accent-critical);
+  border: 1.5px solid var(--bg-surface);
+
+  color: #ffffff;
+  font-family: var(--font-mono);
+  font-size: 7px;
+  font-weight: 700;
+}
+
+/* Severity coloring — flat fills close to the reference's palette weight,
+   mapped onto the app's existing thermal scale (gray → blue → amber → red)
+   instead of the reference's arbitrary orange/blue branch coloring, since
+   severity is what this diagram actually needs to communicate. */
+
+.org-node-folder.severity-untouched,
+.org-node-file.severity-untouched {
+  background: #eef1f6;
+  border-color: #c7cedb;
+  color: #5b6479;
+}
+
+.org-node-folder.severity-info,
+.org-node-file.severity-info {
+  background: #cfe0fb;
+  border-color: #7ba7e8;
+  color: #1c3f78;
+}
+
+.org-node-folder.severity-warning,
+.org-node-file.severity-warning {
+  background: #ffe3b0;
+  border-color: #d99a2b;
+  color: #6b4405;
+}
+
+.org-node-folder.severity-critical,
+.org-node-file.severity-critical {
+  background: #f8c6c6;
+  border-color: #d65d5d;
+  color: #7a1414;
+}
+
+.org-node-inert {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.org-node-file:not(.org-node-inert):hover {
+  filter: brightness(0.96);
+  transform: translateY(-1px);
+}
+
+.org-node-folder:hover {
+  filter: brightness(0.97);
+}
+
+/* Live pulse — the exact node a new event just touched rings outward,
+   same "just arrived" signal used across the rest of the dashboard. */
+
+@keyframes org-node-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(198, 40, 40, 0.55);
+  }
+  70% {
+    box-shadow: 0 0 0 10px rgba(198, 40, 40, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(198, 40, 40, 0);
+  }
+}
+
+.org-node-flash {
+  animation: org-node-pulse 1.6s ease-out;
 }

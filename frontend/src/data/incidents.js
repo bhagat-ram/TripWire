@@ -184,7 +184,21 @@ export const RESPONSE_ACTIONS = {
   },
 };
 
-/** Applies a response action to one incident, appending an entry to its action log. */
+/**
+ * Applies a response action to one incident, appending an entry to its
+ * action log.
+ *
+ * Backend-supported actions (suspend/kill) do NOT get to claim their
+ * resultStatus ("contained") just because the button was clicked — that
+ * used to happen unconditionally here, which meant the case flipped to
+ * "Contained" the instant you clicked Kill even in dry-run, even if the
+ * fetch to POST /action never arrived, and even if it failed. The only
+ * real source of truth is the backend's response_ack (see onResponseAck in
+ * useTripwireConnection.js), so backend-supported actions instead mark the
+ * case `pendingAction` and leave status untouched until that ack resolves
+ * it. Locally-only actions (isolate/escalate/dismiss) have no ack to wait
+ * for, so they still resolve immediately.
+ */
 export function respondToIncident(incidents, incidentId, actionKey, dryRun) {
   const action = RESPONSE_ACTIONS[actionKey];
   if (!action) return { incidents, result: null };
@@ -198,10 +212,19 @@ export function respondToIncident(incidents, incidentId, actionKey, dryRun) {
     result = { before, after, ts: new Date().toLocaleTimeString(), action: action.label };
     return {
       ...inc,
-      status: action.resultStatus,
+      status: action.backendSupported ? inc.status : action.resultStatus,
+      pendingAction: action.backendSupported ? actionKey : inc.pendingAction ?? null,
       actionLog: [
         ...inc.actionLog,
-        { id: `action-${_nextEntrySeq++}`, label: action.label, before, after, ts: result.ts, dryRun },
+        {
+          id: `action-${_nextEntrySeq++}`,
+          label: action.label,
+          before,
+          after,
+          ts: result.ts,
+          dryRun,
+          pending: action.backendSupported,
+        },
       ],
     };
   });
@@ -209,11 +232,31 @@ export function respondToIncident(incidents, incidentId, actionKey, dryRun) {
   return { incidents: next, result };
 }
 
-/** Merges backend-reported panic_mode context onto the matching (by pid) open incident. */
+/**
+ * Merges backend-reported panic_mode context onto the matching (by pid) open
+ * incident, including the backend's authoritative mitigation_status —
+ * "auto_mitigated" (a real action actually succeeded) or "requires_manual"
+ * (dry-run / nothing succeeded / monitor-only rule) — rather than the
+ * frontend re-deriving that from a raw dry_run flag. escalation=true means
+ * this specific panic_mode event was fired by the auto-escalate-to-kill path
+ * (the process kept touching decoys after being suspended), which gets its
+ * own description so an analyst can tell "first response" apart from
+ * "we had to escalate."
+ */
 export function attachBackendPanic(incidents, panic, lastCriticalEvent) {
   if (!lastCriticalEvent) return incidents;
   const key = `${lastCriticalEvent.process}::${lastCriticalEvent.pid}`;
   let matched = false;
+
+  const mitigationStatus = panic.mitigation_status
+    ?? (panic.dry_run ? "requires_manual" : "auto_mitigated");
+
+  const description = panic.escalation
+    ? (panic.escalation_reason
+        || "Process kept touching decoys after being suspended — auto-escalated to kill.")
+    : mitigationStatus === "auto_mitigated"
+      ? "Rapid access across multiple protected resources has triggered a detection. Panic Mode suspended the source process and locked protected resources."
+      : "Rapid access across multiple protected resources has triggered a detection. Panic Mode ran in dry-run mode (or the response rule was monitor-only) — no process was actually suspended. Manual action is needed.";
 
   const next = incidents.map((inc) => {
     if (inc.key !== key || !OPEN_STATUSES.has(inc.status)) return inc;
@@ -224,9 +267,9 @@ export function attachBackendPanic(incidents, panic, lastCriticalEvent) {
       suspended: panic.suspended || [],
       killed: panic.killed ?? null,
       dryRun: panic.dry_run,
-      description: panic.dry_run
-        ? "Rapid access across multiple protected resources has triggered a detection. Panic Mode ran in dry-run mode — no processes were actually suspended."
-        : "Rapid access across multiple protected resources has triggered a detection. Panic Mode suspended the source process and locked protected resources.",
+      mitigationStatus,
+      escalated: panic.escalation === true || inc.escalated === true,
+      description,
     };
   });
 
@@ -297,34 +340,43 @@ export function serializeAllCaseStates(incidents) {
  * Cases with no stored state (never persisted, or opened since the last
  * save) pass through unchanged. Existing incident objects are reused by
  * reference when nothing changed, so React can bail out of re-rendering them.
+ *
+ * A case whose stored status is "removed" (a tombstone — see removeIncident
+ * in the connection hook) is dropped from the result entirely. Without
+ * this, deleting an incident only ever deleted the analyst's notes/status
+ * row — incidents are always rebuilt from the raw event log, so on the
+ * very next reload the same process's old events would rebuild it fresh
+ * as a brand-new "open" case, making deletion look like it never happened.
  */
 export function applyStoredCaseStates(incidents, storedStates) {
   if (!storedStates || storedStates.length === 0) return incidents;
   const byKey = new Map(storedStates.map((s) => [s.key, s]));
 
-  return incidents.map((inc) => {
+  const merged = incidents.map((inc) => {
     const stored = byKey.get(inc.key);
     if (!stored) return inc;
 
     let changed = false;
-    const merged = { ...inc };
+    const next = { ...inc };
     // Adopt the persisted id, not the freshly-generated one: `_nextCaseSeq`
     // restarts at 1 every reload, so without this, saving a note or status
     // change after a reload would POST a *new* id for the same real-world
     // case — leaving the old row behind as an orphan and quietly piling up
     // duplicate case rows in the backend on every refresh.
     if (stored.id && stored.id !== inc.id) {
-      merged.id = stored.id;
+      next.id = stored.id;
       changed = true;
     }
     for (const field of MUTABLE_CASE_FIELDS) {
       if (stored[field] !== undefined && stored[field] !== inc[field]) {
-        merged[field] = stored[field];
+        next[field] = stored[field];
         changed = true;
       }
     }
-    return changed ? merged : inc;
+    return changed ? next : inc;
   });
+
+  return merged.filter((inc) => byKey.get(inc.key)?.status !== "removed");
 }
 
 /** Sort order for the incident queue: open work first, then by severity, then most recent. */

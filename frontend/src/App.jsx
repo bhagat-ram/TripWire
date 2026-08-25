@@ -8,6 +8,8 @@ import { IncidentQueue } from "./components/incidents/IncidentQueue";
 import { DetectionPanel } from "./components/threat/DetectionPanel";
 import { ResponseBar } from "./components/response/ResponseBar";
 import { InvestigationDrawer } from "./components/modals/InvestigationDrawer";
+import { SettingsModal } from "./components/modals/SettingsModal";
+import { FolderTreeDiagram } from "./components/analysis/FolderTreeDiagram";
 
 import { useTripwireConnection } from "./hooks/useTripwireConnection";
 import { DECOY_CATEGORIES, categoryMatches } from "./data/decoyResources";
@@ -22,16 +24,25 @@ function App() {
     health,
     thresholds,
     thresholdUpdateError,
+    autoResponseRules,
+    escalateAfterTouches,
+    autoResponseUpdateError,
+    autoResponsePending,
+    applyAutoResponse,
     dryRunPending,
     lastArrivedId,
     lastActionResult,
     triggerSimulation,
+    stopSimulation,
+    simulationRunning,
+    simulationError,
     clearSimulation,
     respondToIncident,
     addIncidentNote,
     removeIncident,
     clearResolved,
     removeEvent,
+    clearAllEvents,
     applyThresholds,
     setDryRun,
   } = useTripwireConnection();
@@ -39,6 +50,7 @@ function App() {
   const [selectedCategoryId, setSelectedCategoryId] = useState("all");
   const [focusEvent, setFocusEvent] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [severityFilter, setSeverityFilter] = useState(null); // null | "warning" | "critical"
   const [density, setDensity] = useState("comfortable"); // "comfortable" | "compact"
 
@@ -53,6 +65,9 @@ function App() {
   const drawerIncident = incidents.find((inc) => inc.id === focusEvent?.incidentId) || selectedIncident;
 
   const hasOpenCase = incidents.some((inc) => inc.status === "open" || inc.status === "escalated");
+  const openCaseCount = incidents.filter(
+    (inc) => inc.status === "open" || inc.status === "escalated"
+  ).length;
   const hasCriticalOpen = incidents.some(
     (inc) => inc.severity === "Critical" && (inc.status === "open" || inc.status === "escalated")
   );
@@ -93,6 +108,8 @@ function App() {
         health={health}
         hasOpenCase={hasOpenCase}
         allContainedOrDismissed={allContainedOrDismissed}
+        openCaseCount={openCaseCount}
+        onOpenSettings={() => setSettingsOpen(true)}
       />
 
       <main className="main-content">
@@ -103,51 +120,81 @@ function App() {
           health={health}
           dryRunPending={dryRunPending}
           onSetDryRun={setDryRun}
+          onOpenSettings={() => setSettingsOpen(true)}
         />
 
-        <OverviewCards
-          events={events}
-          incidents={incidents}
-          severityFilter={severityFilter}
-          onToggleSeverityFilter={toggleSeverityFilter}
-          lastArrivedId={lastArrivedId}
-        />
+        <div id="section-overview">
+          <OverviewCards
+            events={events}
+            incidents={incidents}
+            severityFilter={severityFilter}
+            onToggleSeverityFilter={toggleSeverityFilter}
+            lastArrivedId={lastArrivedId}
+          />
+        </div>
 
-        <ActivityFeed
-          filteredEvents={filteredEvents}
-          focusEventId={focusEvent?.id}
-          onSelectEvent={openEventInDrawer}
-          onSimulate={triggerSimulation}
-          onReset={clearSimulation}
-          onRemoveEvent={removeEvent}
-          severityFilter={severityFilter}
-          onToggleSeverityFilter={toggleSeverityFilter}
-          density={density}
-          onSetDensity={setDensity}
-          lastArrivedId={lastArrivedId}
-        />
+        <div id="section-activity">
+          <ActivityFeed
+            filteredEvents={filteredEvents}
+            focusEventId={focusEvent?.id}
+            onSelectEvent={openEventInDrawer}
+            onSimulate={triggerSimulation}
+            onStopSimulate={stopSimulation}
+            simulationRunning={simulationRunning}
+            simulationError={simulationError}
+            onReset={clearSimulation}
+            onRemoveEvent={removeEvent}
+            onClearAllEvents={clearAllEvents}
+            severityFilter={severityFilter}
+            onToggleSeverityFilter={toggleSeverityFilter}
+            density={density}
+            onSetDensity={setDensity}
+            lastArrivedId={lastArrivedId}
+          />
+        </div>
 
-        <IncidentQueue
-          incidents={incidents}
-          selectedIncidentId={selectedIncidentId}
-          onSelect={openIncidentInDrawer}
-          onRemove={removeIncident}
-          onClearResolved={clearResolved}
-        />
+        <div id="section-analysis">
+          <FolderTreeDiagram events={events} lastArrivedId={lastArrivedId} onSelectEvent={openEventInDrawer} />
+        </div>
 
-        <DetectionPanel
-          incident={selectedIncident}
-          events={events}
-          thresholds={thresholds}
-          thresholdUpdateError={thresholdUpdateError}
-          onApplyThresholds={applyThresholds}
-        />
+        <div id="section-incidents">
+          <IncidentQueue
+            incidents={incidents}
+            selectedIncidentId={selectedIncidentId}
+            onSelect={openIncidentInDrawer}
+            onRemove={removeIncident}
+            onClearResolved={clearResolved}
+          />
+        </div>
 
-        <ResponseBar
-          incident={selectedIncident}
-          events={events}
-          onRespond={respondToIncident}
-          lastActionResult={lastActionResult}
+        <div id="section-detection">
+          <DetectionPanel
+            incident={selectedIncident}
+            events={events}
+            thresholds={thresholds}
+            thresholdUpdateError={thresholdUpdateError}
+            onApplyThresholds={applyThresholds}
+          />
+        </div>
+
+        <div id="section-response">
+          <ResponseBar
+            incident={selectedIncident}
+            events={events}
+            onRespond={respondToIncident}
+            lastActionResult={lastActionResult}
+            health={health}
+          />
+        </div>
+
+        <SettingsModal
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          rules={autoResponseRules}
+          escalateAfterTouches={escalateAfterTouches}
+          onApply={applyAutoResponse}
+          updateError={autoResponseUpdateError}
+          pending={autoResponsePending}
         />
 
         {drawerOpen && (

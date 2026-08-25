@@ -131,6 +131,54 @@ def sweep(count: int = 20, sleep_s: float = None, log=print):
         time.sleep(sleep_s)
 
 
+def persist(gap_s: float = None, max_runtime_s: float = None, log=print):
+    """Real malware doesn't fire a handful of touches and exit — it keeps
+    running and keeps coming back. `sweep`/`flood` finish almost instantly,
+    so by the time the classifier escalates to 'critical' and panic.py goes
+    to suspend/kill the offending PID, the process may already be gone
+    (nothing left to act on). `persist` fixes that: it loops forever
+    (touching a random decoy every `gap_s` seconds) so there's a real,
+    still-running process for panic mode to actually suspend or kill —
+    and you can watch the OS actually stop it, rather than just reading a
+    log entry that says it would have.
+
+    Stops when:
+      - it is suspended (SIGSTOP) or killed (SIGTERM/SIGKILL) by panic.py —
+        this is the intended "auto-response worked" outcome, observed from
+        the *outside* (the process pauses or disappears), not by the loop
+        checking on itself,
+      - Ctrl+C (KeyboardInterrupt) from a human running it manually, or
+      - `max_runtime_s` elapses, if set — a safety valve for demos/tests so
+        a persist run is never accidentally left running forever.
+
+    It never touches anything outside decoy_gen's own manifest — same
+    `_safe_decoy_path` rail as every other mode.
+    """
+    gap_s = config.SIMULATOR_SLEEP_S * 6 if gap_s is None else gap_s
+    paths = _decoy_paths()
+    pid = os.getpid()
+    log(f"[persist] starting — pid={pid}, gap={gap_s}s, "
+        f"{'no runtime cap' if max_runtime_s is None else f'runtime cap={max_runtime_s}s'} "
+        f"(Ctrl+C to stop)")
+    start = time.monotonic()
+    i = 0
+    try:
+        while True:
+            if max_runtime_s is not None and (time.monotonic() - start) >= max_runtime_s:
+                log(f"[persist] max_runtime_s={max_runtime_s} reached, stopping on its own "
+                    f"(demo safety valve — real malware wouldn't do this)")
+                break
+            path = _safe_decoy_path(random.choice(paths))
+            op = random.choice(_OPS)
+            i += 1
+            log(f"[persist #{i}] {op} -> {os.path.basename(path)} (pid={pid})")
+            {"read": _touch_read, "modify": _touch_modify,
+             "rename": lambda p: _touch_rename(p)}[op](path)
+            time.sleep(gap_s)
+    except KeyboardInterrupt:
+        log(f"[persist] interrupted by user after {i} touches — exiting")
+
+
 def flood(total_events: int = 250, files_n: int = 10, log=print):
     """Very high event-rate burst across a small set of files — the Section
     4 'fire 200 events across 10 files in under 2 seconds' flood test."""
@@ -155,16 +203,21 @@ def run(mode: str, **kwargs):
         sweep(**kwargs)
     elif mode == "flood":
         flood(**kwargs)
+    elif mode == "persist":
+        persist(**kwargs)
     else:
         raise ValueError(f"unknown mode: {mode!r}")
 
 
 def _cli():
     parser = argparse.ArgumentParser(description="Tripwire safe decoy-file simulator.")
-    parser.add_argument("--mode", choices=["trickle", "sweep", "flood"], default="sweep")
+    parser.add_argument("--mode", choices=["trickle", "sweep", "flood", "persist"], default="sweep")
     parser.add_argument("--count", type=int, default=None,
                          help="events for trickle/sweep, or total_events for flood")
     parser.add_argument("--sleep", type=float, default=None, help="per-event sleep seconds")
+    parser.add_argument("--max-runtime", type=float, default=None,
+                         help="persist mode only: stop on its own after N seconds "
+                              "(omit to run until suspended/killed/Ctrl+C)")
     args = parser.parse_args()
 
     kwargs = {}
@@ -181,6 +234,11 @@ def _cli():
     elif args.mode == "flood":
         if args.count is not None:
             kwargs["total_events"] = args.count
+    elif args.mode == "persist":
+        if args.sleep is not None:
+            kwargs["gap_s"] = args.sleep
+        if args.max_runtime is not None:
+            kwargs["max_runtime_s"] = args.max_runtime
 
     run(args.mode, **kwargs)
 

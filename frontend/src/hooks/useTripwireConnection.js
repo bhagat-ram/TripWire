@@ -20,6 +20,10 @@ import {
 } from "../data/incidents";
 
 const DEFAULT_THRESHOLDS = { warning: 3, critical: 6 };
+// Mirrors config.py's own defaults, just so the panel isn't visibly blank
+// for the one render before GET /config/auto-response actually answers.
+const DEFAULT_AUTO_RESPONSE_RULES = { info: ["monitor"], warning: ["monitor"], critical: ["suspend", "lock"] };
+const DEFAULT_ESCALATE_AFTER_TOUCHES = 3;
 
 /** Best-effort save of one case's mutable state to the backend — fire-and-forget,
  * since the local state (already updated by the caller) is the source of truth
@@ -33,12 +37,12 @@ function persistCase(incident) {
   }).catch(() => {});
 }
 
-function deleteCaseFromBackend(incidentId) {
-  fetch(`${BACKEND_URL}/cases/${encodeURIComponent(incidentId)}`, { method: "DELETE" }).catch(() => {});
-}
-
 function deleteEventFromBackend(eventId) {
   fetch(`${BACKEND_URL}/events/${encodeURIComponent(eventId)}`, { method: "DELETE" }).catch(() => {});
+}
+
+function clearAllEventsFromBackend() {
+  fetch(`${BACKEND_URL}/events`, { method: "DELETE" }).catch(() => {});
 }
 
 /**
@@ -68,10 +72,17 @@ export function useTripwireConnection() {
   const [health, setHealth] = useState(null);
   const [thresholds, setThresholdsState] = useState(DEFAULT_THRESHOLDS);
   const [thresholdUpdateError, setThresholdUpdateError] = useState(null);
+  const [autoResponseRules, setAutoResponseRulesState] = useState(DEFAULT_AUTO_RESPONSE_RULES);
+  const [escalateAfterTouches, setEscalateAfterTouchesState] = useState(DEFAULT_ESCALATE_AFTER_TOUCHES);
+  const [autoResponseUpdateError, setAutoResponseUpdateError] = useState(null);
+  const [autoResponsePending, setAutoResponsePending] = useState(false);
   const [dryRunPending, setDryRunPending] = useState(false);
   const [lastArrivedId, setLastArrivedId] = useState(null);
   const [lastActionResult, setLastActionResult] = useState(null);
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [simulationRunning, setSimulationRunning] = useState(false);
+  const [simulationPid, setSimulationPid] = useState(null);
+  const [simulationError, setSimulationError] = useState(null);
 
   const lastCriticalEventRef = useRef(null);
 
@@ -95,9 +106,23 @@ export function useTripwireConnection() {
       fetch(`${BACKEND_URL}/cases`)
         .then((res) => (res.ok ? res.json() : null))
         .catch(() => null),
+      // Current auto-response rules — config.py's live values may already
+      // differ from the DEFAULT_* constants above (e.g. a previous session
+      // changed them, or the backend was started with env overrides), so
+      // the settings panel should reflect reality, not just the fallback.
+      fetch(`${BACKEND_URL}/config/auto-response`)
+        .then((res) => (res.ok ? res.json() : null))
+        .catch(() => null),
     ])
-      .then(([rawEvents, rawCases]) => {
-        if (cancelled || !rawEvents) return;
+      .then(([rawEvents, rawCases, rawAutoResponse]) => {
+        if (cancelled) return;
+        if (rawAutoResponse) {
+          if (rawAutoResponse.rules) setAutoResponseRulesState(rawAutoResponse.rules);
+          if (typeof rawAutoResponse.escalate_to_kill_after_touches === "number") {
+            setEscalateAfterTouchesState(rawAutoResponse.escalate_to_kill_after_touches);
+          }
+        }
+        if (!rawEvents) return;
         // Backend returns newest-first; keep that order to match how live
         // events get prepended below.
         const mapped = rawEvents.map(mapTripwireEvent);
@@ -139,6 +164,19 @@ export function useTripwireConnection() {
           }
           return next;
         });
+
+        // If panic mode actually killed the process our own "Simulate
+        // detection" click launched, the simulation is over — the pipeline
+        // itself stopped it, not the Stop button. Reflect that in the UI
+        // instead of leaving the button stuck on "running" for a process
+        // that's already dead.
+        setSimulationPid((prevPid) => {
+          if (prevPid != null && raw.killed === prevPid) {
+            setSimulationRunning(false);
+            return null;
+          }
+          return prevPid;
+        });
       },
       onResponseAck: (raw) => {
         // Source of truth for suspend/kill/lock: confirms what the backend
@@ -147,6 +185,42 @@ export function useTripwireConnection() {
         setLastActionResult((prev) =>
           prev ? { ...prev, backendAck: raw } : { before: "", after: `${raw.action}: ${raw.status}`, backendAck: raw }
         );
+
+        // Resolve the case's pending suspend/kill now that we actually know
+        // what happened — only a real "succeeded" + non-dry-run ack earns
+        // "Contained". Anything else (skipped_dry_run, skipped_allowlist,
+        // failed, or dry-run "succeeded") leaves the case open so the
+        // analyst can see it wasn't really handled and try again.
+        setIncidents((prev) => {
+          const targetPid = String(raw.target);
+          let changed = null;
+
+          const next = prev.map((inc) => {
+            if (String(inc.pid) !== targetPid || inc.pendingAction !== raw.action) return inc;
+            const reallyContained = raw.status === "succeeded" && raw.dry_run === false;
+            const updated = {
+              ...inc,
+              status: reallyContained ? "contained" : "open",
+              pendingAction: null,
+              actionLog: inc.actionLog.map((entry, i) =>
+                i === inc.actionLog.length - 1 && entry.pending
+                  ? {
+                      ...entry,
+                      pending: false,
+                      after: reallyContained
+                        ? entry.after
+                        : `${raw.action}: ${raw.status}${raw.reason ? ` (${raw.reason})` : ""} — process still running`,
+                    }
+                  : entry
+              ),
+            };
+            changed = updated;
+            return updated;
+          });
+
+          if (changed) persistCase(changed);
+          return next;
+        });
       },
     });
 
@@ -173,11 +247,65 @@ export function useTripwireConnection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [incidents]);
 
+  /**
+   * "Simulate detection" button. When the backend is reachable, this now
+   * launches a REAL simulator.py subprocess (POST /simulate, default mode
+   * "persist") that touches actual decoy files — the resulting events flow
+   * through the real watcher -> attribution -> classifier -> panic pipeline
+   * and arrive over the same tripwire_event/panic_mode websocket as any
+   * genuine detection, so Suspend/Kill/auto-escalation all have a real,
+   * still-running process to act on instead of a canned demo row.
+   *
+   * Falls back to the old canned-event injection only when the backend is
+   * unreachable, so the dashboard still has *something* to demo offline —
+   * that fallback never touches real files or the real pipeline, since
+   * there's no backend to run it against.
+   */
   const triggerSimulation = () => {
-    setEvents(suspiciousEvents);
-    setIncidents(buildIncidentsFromEvents(suspiciousEvents));
-    setLastActionResult(null);
-    setLastArrivedId(suspiciousEvents[0]?.id ?? null);
+    setSimulationError(null);
+
+    if (!backendConnected) {
+      setEvents(suspiciousEvents);
+      setIncidents(buildIncidentsFromEvents(suspiciousEvents));
+      setLastActionResult(null);
+      setLastArrivedId(suspiciousEvents[0]?.id ?? null);
+      return;
+    }
+
+    fetch(`${BACKEND_URL}/simulate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "persist" }),
+    })
+      .then((res) => res.json().then((body) => ({ ok: res.ok, body })))
+      .then(({ ok, body }) => {
+        if (!ok) {
+          setSimulationError(body.error || "Failed to start simulation");
+          return;
+        }
+        setSimulationRunning(true);
+        setSimulationPid(body.pid);
+      })
+      .catch(() => setSimulationError("Backend unreachable — could not start simulation"));
+  };
+
+  /**
+   * Stops a simulator subprocess started by triggerSimulation. Needed
+   * because persist mode (the default) runs until something stops it —
+   * either this, or panic mode actually suspending/killing it as the
+   * detection response plays out.
+   */
+  const stopSimulation = () => {
+    if (simulationPid == null) {
+      setSimulationRunning(false);
+      return;
+    }
+    fetch(`${BACKEND_URL}/simulate/${simulationPid}`, { method: "DELETE" })
+      .catch(() => {})
+      .finally(() => {
+        setSimulationRunning(false);
+        setSimulationPid(null);
+      });
   };
 
   /**
@@ -239,19 +367,27 @@ export function useTripwireConnection() {
     });
   };
 
-  /** Removes one case from the queue — for clearing out an old/resolved incident individually. */
+  /**
+   * Removes one case from the queue. Persists a "removed" tombstone rather
+   * than physically deleting the case row: incidents are always rebuilt
+   * from the raw event log on reload, and the underlying events for this
+   * process are still in that log. Without a tombstone to check against,
+   * the next rebuild would recreate this exact incident fresh — making
+   * deletion look like it silently undid itself on refresh.
+   */
   const removeIncident = (incidentId) => {
-    setIncidents((prev) => removeIncidentFromList(prev, incidentId));
-    deleteCaseFromBackend(incidentId);
+    setIncidents((prev) => {
+      const target = prev.find((inc) => inc.id === incidentId);
+      if (target) persistCase({ ...target, status: "removed" });
+      return removeIncidentFromList(prev, incidentId);
+    });
   };
 
-  /** Bulk-clears every contained/dismissed case, leaving open/escalated work untouched. */
+  /** Bulk-clears every contained/dismissed case (tombstoned, same reasoning as removeIncident), leaving open/escalated work untouched. */
   const clearResolved = () => {
     setIncidents((prev) => {
-      const resolvedIds = prev
-        .filter((inc) => inc.status !== "open" && inc.status !== "escalated")
-        .map((inc) => inc.id);
-      resolvedIds.forEach(deleteCaseFromBackend);
+      const resolved = prev.filter((inc) => inc.status !== "open" && inc.status !== "escalated");
+      resolved.forEach((inc) => persistCase({ ...inc, status: "removed" }));
       return clearResolvedIncidents(prev);
     });
   };
@@ -260,6 +396,12 @@ export function useTripwireConnection() {
   const removeEvent = (eventId) => {
     setEvents((prev) => prev.filter((e) => e.id !== eventId));
     deleteEventFromBackend(eventId);
+  };
+
+  /** Clears every row from the activity feed without touching incidents/cases — a lighter-weight option than the full Reset. */
+  const clearAllEvents = () => {
+    setEvents([]);
+    clearAllEventsFromBackend();
   };
 
   /** Live-updates warning/critical thresholds on the backend (best-effort). */
@@ -278,6 +420,51 @@ export function useTripwireConnection() {
       }
     } catch {
       setThresholdUpdateError("Backend unreachable — thresholds apply locally only.");
+    }
+  };
+
+  /**
+   * Live-updates the per-severity auto-response rules and/or the
+   * escalate-to-kill-after-N-touches threshold (POST /config/auto-response).
+   * Accepts a partial patch — either key alone is fine, matching the
+   * backend's own "either or both" contract — and always sends the full
+   * current rules object merged with the patch, since the backend replaces
+   * whichever severities are present in the body rather than deep-merging
+   * per-action.
+   */
+  const applyAutoResponse = async (patch) => {
+    const nextRules = patch.rules ? { ...autoResponseRules, ...patch.rules } : autoResponseRules;
+    const nextEscalate =
+      typeof patch.escalate_to_kill_after_touches === "number"
+        ? patch.escalate_to_kill_after_touches
+        : escalateAfterTouches;
+
+    // Optimistic — the panel should feel instant, same as thresholds.
+    setAutoResponseRulesState(nextRules);
+    setEscalateAfterTouchesState(nextEscalate);
+    setAutoResponseUpdateError(null);
+    setAutoResponsePending(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/config/auto-response`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rules: nextRules, escalate_to_kill_after_touches: nextEscalate }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setAutoResponseUpdateError(body.error || "Backend rejected the new auto-response rules.");
+      } else {
+        // Reconcile with whatever the backend actually stored, in case it
+        // normalized/rejected part of the patch.
+        if (body.rules) setAutoResponseRulesState(body.rules);
+        if (typeof body.escalate_to_kill_after_touches === "number") {
+          setEscalateAfterTouchesState(body.escalate_to_kill_after_touches);
+        }
+      }
+    } catch {
+      setAutoResponseUpdateError("Backend unreachable — rules apply locally only.");
+    } finally {
+      setAutoResponsePending(false);
     }
   };
 
@@ -312,16 +499,25 @@ export function useTripwireConnection() {
     historyLoaded,
     thresholds,
     thresholdUpdateError,
+    autoResponseRules,
+    escalateAfterTouches,
+    autoResponseUpdateError,
+    autoResponsePending,
+    applyAutoResponse,
     dryRunPending,
     lastArrivedId,
     lastActionResult,
     triggerSimulation,
+    stopSimulation,
+    simulationRunning,
+    simulationError,
     clearSimulation,
     respondToIncident,
     addIncidentNote,
     removeIncident,
     clearResolved,
     removeEvent,
+    clearAllEvents,
     applyThresholds,
     setDryRun,
   };

@@ -1,5 +1,10 @@
-import { Flame, AlertTriangle, Ban, ShieldOff, ArrowUpRight, X, Trash2 } from "lucide-react";
+import { Flame, AlertTriangle, Ban, ShieldOff, ArrowUpRight, X, Trash2, ShieldCheck, UserCog, Zap } from "lucide-react";
 import { sortIncidents } from "../../data/incidents";
+
+const MITIGATION_META = {
+  auto_mitigated: { label: "Auto-mitigated", icon: ShieldCheck, className: "mitigation-auto" },
+  requires_manual: { label: "Requires manual action", icon: UserCog, className: "mitigation-manual" },
+};
 
 const STATUS_META = {
   open: { label: "Open", icon: AlertTriangle, className: "case-status-open" },
@@ -84,6 +89,20 @@ export function IncidentQueue({ incidents, selectedIncidentId, onSelect, onRemov
                       last seen {incident.lastSeen}
                       {incident.mitre ? ` · ${incident.mitre}` : ""}
                     </div>
+                    {incident.backendDriven && incident.mitigationStatus && (
+                      <div className={`incident-card-mitigation ${MITIGATION_META[incident.mitigationStatus]?.className || ""}`}>
+                        {(() => {
+                          const MitigationIcon = MITIGATION_META[incident.mitigationStatus]?.icon || UserCog;
+                          return <MitigationIcon size={11} />;
+                        })()}
+                        {MITIGATION_META[incident.mitigationStatus]?.label || "Unknown"}
+                        {incident.escalated && (
+                          <span className="incident-card-escalated-tag" title="Auto-escalated to kill after repeat post-suspend activity">
+                            <Zap size={10} /> escalated
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   <div className="incident-card-status">

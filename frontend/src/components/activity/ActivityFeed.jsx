@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, RefreshCw, Radar, ChevronLeft, ChevronRight } from "lucide-react";
+import { AlertTriangle, RefreshCw, Radar, ChevronLeft, ChevronRight, Trash2, Square } from "lucide-react";
 import { EventRow } from "./EventRow";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50];
@@ -9,8 +9,12 @@ export function ActivityFeed({
   focusEventId,
   onSelectEvent,
   onSimulate,
+  onStopSimulate,
+  simulationRunning,
+  simulationError,
   onReset,
   onRemoveEvent,
+  onClearAllEvents,
   severityFilter,
   onToggleSeverityFilter,
   density,
@@ -80,9 +84,41 @@ export function ActivityFeed({
             </button>
           </div>
 
-          <button className="simulation-button" onClick={onSimulate}>
-            <AlertTriangle size={12} />
-            Simulate detection
+          {simulationRunning ? (
+            <button
+              className="simulation-button simulation-button-running"
+              onClick={onStopSimulate}
+              title="Stop the running simulator subprocess"
+            >
+              <Square size={12} />
+              Stop simulation
+            </button>
+          ) : (
+            <button
+              className="simulation-button"
+              onClick={onSimulate}
+              title="Launches a real simulator.py subprocess that touches actual decoy files, driving the full detection pipeline end to end"
+            >
+              <AlertTriangle size={12} />
+              Simulate detection
+            </button>
+          )}
+          {simulationError && (
+            <span className="simulation-error" title={simulationError}>
+              {simulationError}
+            </span>
+          )}
+
+          <button
+            className="filter-button"
+            onClick={() => {
+              onClearAllEvents();
+              setPage(1);
+            }}
+            title="Clear every row from the activity feed only — leaves incidents/cases untouched"
+          >
+            <Trash2 size={12} />
+            Clear activity
           </button>
 
           <button
@@ -91,6 +127,7 @@ export function ActivityFeed({
               onReset();
               setPage(1);
             }}
+            title="Full reset — clears activity AND every incident/case"
           >
             <RefreshCw size={12} />
             Reset

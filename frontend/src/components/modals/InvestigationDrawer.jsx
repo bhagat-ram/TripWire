@@ -38,6 +38,7 @@ export function InvestigationDrawer({ incident, focusEvent, allEvents, onClose, 
   const event = focusEvent && incident.eventIds.includes(focusEvent.id) ? focusEvent : evidence[0];
   const isCritical = incident.severity === "Critical";
   const isOpenCase = incident.status === "open" || incident.status === "escalated";
+  const isPending = Boolean(incident.pendingAction);
   const badge = STATUS_BADGE[incident.status] || STATUS_BADGE.open;
 
   const submitNote = () => {
@@ -156,7 +157,7 @@ export function InvestigationDrawer({ incident, focusEvent, allEvents, onClose, 
             <div className="drawer-section-title">Action history</div>
             <div className="action-history">
               {incident.actionLog.map((a) => (
-                <div key={a.id} className="action-history-row">
+                <div key={a.id} className={`action-history-row ${a.pending ? "pending" : ""}`}>
                   <span className="action-history-ts">{a.ts}</span>
                   <strong>{a.label}</strong>
                   <span className="action-history-transition">
@@ -172,13 +173,21 @@ export function InvestigationDrawer({ incident, focusEvent, allEvents, onClose, 
           <div className="drawer-section">
             <div className="drawer-section-title">Respond to this case</div>
             <div className="drawer-response-grid">
-              <button className="drawer-action-btn" onClick={() => onRespond(incident.id, "suspend")}>
+              <button
+                className="drawer-action-btn"
+                disabled={isPending}
+                onClick={() => onRespond(incident.id, "suspend")}
+              >
                 <Ban size={13} />
-                Suspend process
+                {incident.pendingAction === "suspend" ? "Suspending…" : "Suspend process"}
               </button>
-              <button className="drawer-action-btn" onClick={() => onRespond(incident.id, "kill")}>
+              <button
+                className="drawer-action-btn"
+                disabled={isPending}
+                onClick={() => onRespond(incident.id, "kill")}
+              >
                 <Skull size={13} />
-                Kill process
+                {incident.pendingAction === "kill" ? "Killing…" : "Kill process"}
               </button>
               <button className="drawer-action-btn" onClick={() => onRespond(incident.id, "isolate")}>
                 <WifiOff size={13} />
