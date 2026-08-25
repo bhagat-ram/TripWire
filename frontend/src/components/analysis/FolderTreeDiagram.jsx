@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FolderTree, Search, Radio, ChevronsDownUp, ChevronsUpDown } from "lucide-react";
-import { buildManifestTree } from "../../data/manifestTree";
+import { buildManifestTree, confidenceBreakdown } from "../../data/manifestTree";
+import { MITRE_LABELS } from "../../data/mockEvents";
 import { BACKEND_URL } from "../../services/tripwireSocket";
 
 const LINE_COLOR = {
@@ -9,6 +10,24 @@ const LINE_COLOR = {
   warning: "#d99a2b",
   critical: "#d65d5d",
 };
+
+const CONFIDENCE_META = {
+  high: { label: "High confidence", className: "confidence-high" },
+  ambiguous: { label: "Ambiguous — multiple candidate processes", className: "confidence-ambiguous" },
+  unknown: { label: "Unknown — no process could be attributed", className: "confidence-unknown" },
+};
+
+/** Aggregates touched files across the whole tree by MITRE technique — used for the panel's technique breakdown row. */
+function techniqueBreakdown(tree) {
+  const counts = new Map();
+  for (const folder of tree) {
+    for (const file of folder.files) {
+      if (!file.mitre) continue;
+      counts.set(file.mitre, (counts.get(file.mitre) || 0) + 1);
+    }
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+}
 
 /**
  * FolderTreeDiagram — box-and-connector-line diagram (same visual grammar
@@ -184,6 +203,9 @@ export function FolderTreeDiagram({ events, lastArrivedId, onSelectEvent }) {
   );
   const totalFiles = tree.reduce((n, f) => n + f.fileCount, 0);
 
+  const confidence = useMemo(() => confidenceBreakdown(tree), [tree]);
+  const techniques = useMemo(() => techniqueBreakdown(tree), [tree]);
+
   return (
     <section className="analysis-panel">
       <div className="analysis-header">
@@ -220,6 +242,42 @@ export function FolderTreeDiagram({ events, lastArrivedId, onSelectEvent }) {
         {totalTouched > 0 && ` · ${totalTouched} touched`}
       </div>
 
+      {totalTouched > 0 && (
+        <div className="analysis-stats-row">
+          <div className="analysis-stat-block">
+            <span className="analysis-stat-label">Attribution</span>
+            <div className="analysis-stat-chips">
+              <span className="confidence-chip confidence-high" title="Single unambiguous process candidate">
+                {confidence.high} high
+              </span>
+              <span
+                className="confidence-chip confidence-ambiguous"
+                title="Multiple processes were plausible candidates"
+              >
+                {confidence.ambiguous} ambiguous
+              </span>
+              <span className="confidence-chip confidence-unknown" title="No process candidate could be attributed">
+                {confidence.unknown} unknown
+              </span>
+            </div>
+          </div>
+
+          {techniques.length > 0 && (
+            <div className="analysis-stat-block">
+              <span className="analysis-stat-label">Techniques observed</span>
+              <div className="analysis-stat-chips">
+                {techniques.map(([id, count]) => (
+                  <span key={id} className="technique-chip" title={MITRE_LABELS[id] || id}>
+                    {id} <em>{MITRE_LABELS[id] || "Unknown technique"}</em>
+                    <b>{count}</b>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {filteredTree.length === 0 ? (
         <div className="tree-empty">Waiting for backend manifest…</div>
       ) : (
@@ -230,8 +288,10 @@ export function FolderTreeDiagram({ events, lastArrivedId, onSelectEvent }) {
             ))}
           </svg>
 
-          <div className="org-node org-node-root" ref={rootRef}>
-            Protected Resources
+          <div className="org-root-row">
+            <div className="org-node org-node-root" ref={rootRef}>
+              Decoys Location
+            </div>
           </div>
 
           <div className="org-grid">
@@ -261,23 +321,32 @@ export function FolderTreeDiagram({ events, lastArrivedId, onSelectEvent }) {
                     <>
                       <div className="org-cell-stem" />
                       <div className="org-cell-children">
-                        {folder.files.map((file) => (
-                          <button
-                            key={file.key}
-                            className={`org-node org-node-file severity-${file.severity} ${
-                              flashPath === file.path ? "org-node-flash" : ""
-                            } ${file.severity === "untouched" ? "org-node-inert" : ""}`}
-                            onClick={() => jumpToEvidence(file)}
-                            title={
-                              file.touchCount
-                                ? `${file.touchCount} touch${file.touchCount === 1 ? "" : "es"} — click to view evidence`
-                                : "No activity yet"
-                            }
-                          >
-                            <span className="org-node-label">{file.filename}</span>
-                            {file.touchCount > 0 && <span className="org-node-badge">{file.touchCount}</span>}
-                          </button>
-                        ))}
+                        {folder.files.map((file) => {
+                          const confMeta = file.confidence && CONFIDENCE_META[file.confidence];
+                          return (
+                            <button
+                              key={file.key}
+                              className={`org-node org-node-file severity-${file.severity} ${
+                                flashPath === file.path ? "org-node-flash" : ""
+                              } ${file.severity === "untouched" ? "org-node-inert" : ""}`}
+                              onClick={() => jumpToEvidence(file)}
+                              title={
+                                file.touchCount
+                                  ? `${file.touchCount} touch${file.touchCount === 1 ? "" : "es"}${
+                                      confMeta ? ` · ${confMeta.label}` : ""
+                                    } — click to view evidence`
+                                  : "No activity yet"
+                              }
+                            >
+                              {confMeta && (
+                                <span className={`org-node-confidence-dot ${confMeta.className}`} />
+                              )}
+                              <span className="org-node-label">{file.filename}</span>
+                              {file.mitre && <span className="org-node-mitre-tag">{file.mitre}</span>}
+                              {file.touchCount > 0 && <span className="org-node-badge">{file.touchCount}</span>}
+                            </button>
+                          );
+                        })}
                       </div>
                     </>
                   )}

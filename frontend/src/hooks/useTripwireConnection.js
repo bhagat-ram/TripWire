@@ -4,6 +4,7 @@ import {
   connectTripwireSocket,
   pollHealth,
   mapTripwireEvent,
+  mapFsOpenEvent,
   BACKEND_URL,
 } from "../services/tripwireSocket";
 import { suspiciousEvents } from "../data/mockEvents";
@@ -18,6 +19,12 @@ import {
   serializeCaseState,
   applyStoredCaseStates,
 } from "../data/incidents";
+
+// Mirrors config.py's FULL_SYSTEM_MONITOR_BUFFER_SIZE — the server's own
+// in-memory fs_open buffer is capped there, so keeping the client buffer at
+// the same size means "load /fs-audit on mount" and "keep prepending live
+// fs_open rows" agree on how much history is ever worth holding.
+const FS_AUDIT_BUFFER_SIZE = 2000;
 
 const DEFAULT_THRESHOLDS = { warning: 3, critical: 6 };
 // Mirrors config.py's own defaults, just so the panel isn't visibly blank
@@ -84,6 +91,14 @@ export function useTripwireConnection() {
   const [simulationPid, setSimulationPid] = useState(null);
   const [simulationError, setSimulationError] = useState(null);
 
+  // Full-system fanotify audit trail (System Audit page) — separate from
+  // `events`/`incidents` above since it never goes through classifier/panic
+  // (see fanotify_watcher.py's docstring). `fsMonitorPending` guards the
+  // enable/disable toggle the same way `dryRunPending` guards dry-run.
+  const [fsAuditEvents, setFsAuditEvents] = useState([]);
+  const [fsMonitorPending, setFsMonitorPending] = useState(false);
+  const [fsMonitorUpdateError, setFsMonitorUpdateError] = useState(null);
+
   const lastCriticalEventRef = useRef(null);
 
   // Load real backend history once on mount so the feed reflects actual past
@@ -113,8 +128,14 @@ export function useTripwireConnection() {
       fetch(`${BACKEND_URL}/config/auto-response`)
         .then((res) => (res.ok ? res.json() : null))
         .catch(() => null),
+      // Recent full-system fanotify audit trail, if the watcher has ever
+      // run — in-memory only server-side, so this is "whatever's still in
+      // the buffer since the process last started", not full history.
+      fetch(`${BACKEND_URL}/fs-audit?limit=${FS_AUDIT_BUFFER_SIZE}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .catch(() => null),
     ])
-      .then(([rawEvents, rawCases, rawAutoResponse]) => {
+      .then(([rawEvents, rawCases, rawAutoResponse, rawFsAudit]) => {
         if (cancelled) return;
         if (rawAutoResponse) {
           if (rawAutoResponse.rules) setAutoResponseRulesState(rawAutoResponse.rules);
@@ -122,6 +143,8 @@ export function useTripwireConnection() {
             setEscalateAfterTouchesState(rawAutoResponse.escalate_to_kill_after_touches);
           }
         }
+        // Backend returns /fs-audit newest-first too, matching /events.
+        if (rawFsAudit) setFsAuditEvents(rawFsAudit.map(mapFsOpenEvent));
         if (!rawEvents) return;
         // Backend returns newest-first; keep that order to match how live
         // events get prepended below.
@@ -220,6 +243,17 @@ export function useTripwireConnection() {
 
           if (changed) persistCase(changed);
           return next;
+        });
+      },
+      onFsOpen: (raw) => {
+        const mapped = mapFsOpenEvent(raw);
+        setFsAuditEvents((prev) => {
+          const next = [mapped, ...prev];
+          // Client-side mirror of the server's own buffer cap (see
+          // FS_AUDIT_BUFFER_SIZE) — this can otherwise grow unbounded for
+          // as long as the tab stays open, since every open() on the
+          // marked mount(s) emits one of these.
+          return next.length > FS_AUDIT_BUFFER_SIZE ? next.slice(0, FS_AUDIT_BUFFER_SIZE) : next;
         });
       },
     });
@@ -489,6 +523,51 @@ export function useTripwireConnection() {
     }
   };
 
+  /**
+   * Starts/stops the full-system fanotify watcher live (POST
+   * /config/full-system-monitor). Mirrors setDryRun's shape — no confirm
+   * step, though, since unlike arming live panic mode this can't take any
+   * action on its own; it only ever produces read-only audit events.
+   * Starting it can fail in a completely ordinary way (not root, not
+   * Linux, kernel too old) — that comes back as a normal error message,
+   * not an exception, so the toggle can surface it inline.
+   */
+  const setFullSystemMonitor = async (enabled) => {
+    setFsMonitorPending(true);
+    setFsMonitorUpdateError(null);
+    try {
+      const res = await fetch(`${BACKEND_URL}/config/full-system-monitor`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setFsMonitorUpdateError(body.error || "Backend rejected the request.");
+      }
+      // Reflect the authoritative fs_monitor_* fields onto `health`
+      // immediately rather than waiting for the next /health poll, same
+      // reasoning as setDryRun patching `health.dry_run` inline.
+      setHealth((prev) =>
+        prev
+          ? {
+              ...prev,
+              fs_monitor_requested: enabled,
+              fs_monitor_alive: body.fs_monitor_alive ?? (res.ok ? prev.fs_monitor_alive : prev.fs_monitor_alive),
+              fs_monitor_mounts: body.fs_monitor_mounts ?? prev.fs_monitor_mounts,
+              fs_monitor_error: "fs_monitor_error" in body ? body.fs_monitor_error : prev.fs_monitor_error,
+            }
+          : prev
+      );
+      return body;
+    } catch {
+      setFsMonitorUpdateError("Backend unreachable.");
+      return { error: "Backend unreachable." };
+    } finally {
+      setFsMonitorPending(false);
+    }
+  };
+
   return {
     events,
     incidents,
@@ -520,5 +599,9 @@ export function useTripwireConnection() {
     clearAllEvents,
     applyThresholds,
     setDryRun,
+    fsAuditEvents,
+    fsMonitorPending,
+    fsMonitorUpdateError,
+    setFullSystemMonitor,
   };
 }

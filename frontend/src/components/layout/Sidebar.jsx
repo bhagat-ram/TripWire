@@ -1,43 +1,48 @@
 import { ChevronDown } from "lucide-react";
-import { DECOY_CATEGORIES, countForCategory } from "../../data/decoyResources";
 import { useScrollSpy } from "../../hooks/useScrollSpy";
 import { SidebarNav } from "./SidebarNav";
 
 const NAV_SECTION_IDS = [
   "section-overview",
   "section-activity",
-  "section-analysis",
-  "section-incidents",
-  "section-detection",
   "section-response",
 ];
 
 /**
- * Sidebar — navigation + the original file-type resource filter.
+ * Sidebar — workflow navigation + connection status.
  *
- * The live folder/file tree diagram lives in the main content area now
- * (see components/analysis/FolderTreeDiagram.jsx, rendered as
- * #section-analysis in App.jsx) — a real org-chart-style diagram deserves
- * page-width room to actually show its connector lines, not a 212px rail.
- * "Analysis" in the workflow nav below jumps straight to it.
+ * Nav items are a mix now: Overview/Live activity/Response are still
+ * scroll-spy sections on the one-page dashboard (NAV_SECTION_IDS above
+ * only tracks those three), while Analysis/Incidents/Detection graduated
+ * into their own routed pages — see App.jsx's `page` state and
+ * SidebarNav's SECTIONS array for which is which.
  */
 export function Sidebar({
-  events,
-  selectedCategoryId,
-  onSelectCategory,
   backendConnected,
   health,
   hasOpenCase,
   allContainedOrDismissed,
   openCaseCount,
   onOpenSettings,
+  page,
+  onNavigatePage,
 }) {
   const activeSection = useScrollSpy(NAV_SECTION_IDS);
 
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-mark">T</div>
+        <div className="brand-mark">
+          {/* Two posts + a taut line between them, snapped by a diamond
+              trip-spark at the break point — the mark reads as "tripwire"
+              rather than a generic shield/lock, matching the product name. */}
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="4" cy="19" r="2.6" fill="currentColor" />
+            <circle cx="20" cy="5" r="2.6" fill="currentColor" />
+            <path d="M6 17.3 L10.2 13.1 M13.8 9.9 L18 5.7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+            <path d="M12 8 L15 12 L12 16 L9 12 Z" fill="currentColor" />
+          </svg>
+        </div>
         <div>
           <div className="brand-name">Tripwire</div>
           <div className="brand-subtitle">Detection & response</div>
@@ -49,28 +54,10 @@ export function Sidebar({
         openCaseCount={openCaseCount}
         dryRun={health ? health.dry_run !== false : true}
         onOpenSettings={onOpenSettings}
+        page={page}
+        onNavigatePage={onNavigatePage}
+        fsMonitorAlive={!!health?.fs_monitor_alive}
       />
-
-      <div className="sidebar-section">
-        <div className="sidebar-label">Resources</div>
-        <div className="resource-list">
-          {DECOY_CATEGORIES.map((category) => {
-            const Icon = category.icon;
-            const count = countForCategory(category, events);
-            return (
-              <button
-                key={category.id}
-                className={`resource-item ${selectedCategoryId === category.id ? "active" : ""}`}
-                onClick={() => onSelectCategory(category.id)}
-              >
-                <Icon size={15} />
-                <span>{category.label}</span>
-                <span className="resource-count">{count}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
 
       <div className="sidebar-bottom">
         <div className="connection">

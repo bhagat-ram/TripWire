@@ -130,32 +130,29 @@ export function addNote(incidents, incidentId, text) {
 
 // `backendSupported: true` means this action is actually wired to
 // POST /action and can really suspend/kill a process (see
-// useTripwireConnection.js's respondToIncident). "isolate" and "escalate"
-// have no corresponding backend endpoint — the wire contract only knows
-// suspend/kill/lock — so they're labeled "(logged only)" rather than
-// implying a host actually got cut off the network or a ticket was filed.
+// useTripwireConnection.js's respondToIncident). Manual suspend/kill always
+// act for real, regardless of the dry-run/live toggle — only automatic
+// response from the detection pipeline respects dry-run (see panic.py).
+// "isolate" and "escalate" have no corresponding backend endpoint — the
+// wire contract only knows suspend/kill/lock — so they're labeled
+// "(logged only)" rather than implying a host actually got cut off the
+// network or a ticket was filed.
 export const RESPONSE_ACTIONS = {
   suspend: {
     label: "Suspend process",
-    verb: "Suspend logged",
+    verb: "Suspend sent",
     resultStatus: "contained",
     backendSupported: true,
     before: (inc) => `${inc.process} (PID ${inc.pid}) — running`,
-    after: (inc, dryRun) =>
-      dryRun
-        ? "Suspend logged (dry run) — process left running"
-        : `${inc.process} (PID ${inc.pid}) — suspended`,
+    after: (inc) => `${inc.process} (PID ${inc.pid}) — suspended`,
   },
   kill: {
     label: "Kill process",
-    verb: "Kill logged",
+    verb: "Kill sent",
     resultStatus: "contained",
     backendSupported: true,
     before: (inc) => `${inc.process} (PID ${inc.pid}) — running`,
-    after: (inc, dryRun) =>
-      dryRun
-        ? "Kill logged (dry run) — process left running"
-        : `${inc.process} (PID ${inc.pid}) — terminated`,
+    after: (inc) => `${inc.process} (PID ${inc.pid}) — terminated`,
   },
   isolate: {
     label: "Isolate host (logged only)",

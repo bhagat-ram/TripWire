@@ -127,8 +127,17 @@ class PanicController:
 
     # ── process actions ──
 
-    def suspend(self, pid: int) -> ActionResult:
-        attempted = ActionResult(action="suspend", target=str(pid), status="attempted", dry_run=self.dry_run)
+    def suspend(self, pid: int, force: bool = False) -> ActionResult:
+        """`force=True` is used by the dashboard's manual Suspend/Kill
+        buttons (POST /action): a click on a specific case is a deliberate,
+        per-target decision by an analyst, so it always actually acts,
+        regardless of the global dry-run/live toggle. `self.dry_run` itself
+        is untouched — auto-response (trigger(), called from the detection
+        pipeline) still respects it exactly as before. Only this one call
+        is affected.
+        """
+        effective_dry_run = self.dry_run and not force
+        attempted = ActionResult(action="suspend", target=str(pid), status="attempted", dry_run=effective_dry_run)
         _log(attempted)
 
         # Only a REAL prior suspend counts as "already done" once we're live.
@@ -140,25 +149,25 @@ class PanicController:
         # by a later real kill() call on the same pid). Re-verify liveness
         # before short-circuiting, or a stale cache entry silently reports
         # "succeeded" forever for a target that's long gone.
-        if not self.dry_run and pid in self._suspended_pids:
+        if not effective_dry_run and pid in self._suspended_pids:
             if psutil.pid_exists(pid):
                 r = ActionResult(action="suspend", target=str(pid), status="succeeded",
-                                  reason="already suspended (idempotent no-op)", dry_run=self.dry_run)
+                                  reason="already suspended (idempotent no-op)", dry_run=effective_dry_run)
                 _log(r)
                 return r
             self._suspended_pids.discard(pid)  # stale — fall through to re-evaluate for real
-        if self.dry_run and pid in self._dry_run_suspended_pids:
+        if effective_dry_run and pid in self._dry_run_suspended_pids:
             r = ActionResult(action="suspend", target=str(pid), status="succeeded",
-                              reason="already suspended (idempotent no-op, dry-run)", dry_run=self.dry_run)
+                              reason="already suspended (idempotent no-op, dry-run)", dry_run=effective_dry_run)
             _log(r)
             return r
 
         if _is_allowlisted(pid):
-            r = ActionResult(action="suspend", target=str(pid), status="skipped_allowlist", dry_run=self.dry_run)
+            r = ActionResult(action="suspend", target=str(pid), status="skipped_allowlist", dry_run=effective_dry_run)
             _log(r)
             return r
 
-        if self.dry_run:
+        if effective_dry_run:
             self._dry_run_suspended_pids.add(pid)
             r = ActionResult(action="suspend", target=str(pid), status="skipped_dry_run", dry_run=True)
             _log(r)
@@ -180,8 +189,10 @@ class PanicController:
         _log(r)
         return r
 
-    def kill(self, pid: int) -> ActionResult:
-        attempted = ActionResult(action="kill", target=str(pid), status="attempted", dry_run=self.dry_run)
+    def kill(self, pid: int, force: bool = False) -> ActionResult:
+        """See suspend()'s docstring — same manual-button force override."""
+        effective_dry_run = self.dry_run and not force
+        attempted = ActionResult(action="kill", target=str(pid), status="attempted", dry_run=effective_dry_run)
         _log(attempted)
 
         # Same real-vs-dry-run split as suspend() above — a dry-run "kill"
@@ -191,25 +202,25 @@ class PanicController:
         # only short-circuit if we're the ones who actually killed it and it
         # hasn't been reaped/reused since. If the pid is gone, don't lie and
         # say "succeeded" — that's not idempotency, that's silence.
-        if not self.dry_run and self._killed_pid == pid:
+        if not effective_dry_run and self._killed_pid == pid:
             if not psutil.pid_exists(pid):
                 r = ActionResult(action="kill", target=str(pid), status="succeeded",
-                                  reason="already killed (idempotent no-op)", dry_run=self.dry_run)
+                                  reason="already killed (idempotent no-op)", dry_run=effective_dry_run)
                 _log(r)
                 return r
             self._killed_pid = None  # stale — fall through to re-evaluate for real
-        if self.dry_run and self._dry_run_killed_pid == pid:
+        if effective_dry_run and self._dry_run_killed_pid == pid:
             r = ActionResult(action="kill", target=str(pid), status="succeeded",
-                              reason="already killed (idempotent no-op, dry-run)", dry_run=self.dry_run)
+                              reason="already killed (idempotent no-op, dry-run)", dry_run=effective_dry_run)
             _log(r)
             return r
 
         if _is_allowlisted(pid):
-            r = ActionResult(action="kill", target=str(pid), status="skipped_allowlist", dry_run=self.dry_run)
+            r = ActionResult(action="kill", target=str(pid), status="skipped_allowlist", dry_run=effective_dry_run)
             _log(r)
             return r
 
-        if self.dry_run:
+        if effective_dry_run:
             self._dry_run_killed_pid = pid
             r = ActionResult(action="kill", target=str(pid), status="skipped_dry_run", dry_run=True)
             _log(r)

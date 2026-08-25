@@ -15,8 +15,21 @@
 
 const RANK = { untouched: 0, info: 1, warning: 2, critical: 3 };
 
+// Attribution confidence, ranked worst (least certain) to best — used so a
+// folder/file's badge reflects the *least* confident attribution seen
+// across its touches, same "worst case wins" logic severity already uses.
+// An analyst scanning the tree should never see "high confidence" on a file
+// that also had an "unknown" touch hiding behind it.
+const CONFIDENCE_RANK = { unknown: 0, ambiguous: 1, high: 2 };
+
 function higherSeverity(a, b) {
   return RANK[b] > RANK[a] ? b : a;
+}
+
+function worseConfidence(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return CONFIDENCE_RANK[b] < CONFIDENCE_RANK[a] ? b : a;
 }
 
 /**
@@ -27,19 +40,28 @@ function higherSeverity(a, b) {
 export function buildManifestTree(manifest, events) {
   if (!manifest?.placements) return [];
 
-  // One pass over events: path -> { severity, touchCount, lastEventTime }
+  // One pass over events: path -> { severity, touchCount, lastEventTime, confidence, mitre }
   const byPath = new Map();
   for (const e of events) {
     if (!e.resource) continue;
     const prev = byPath.get(e.resource);
     const sev = e.severityRaw || "info";
+    const conf = e.attributionConfidence || null;
     if (!prev) {
-      byPath.set(e.resource, { severity: sev, touchCount: 1, lastEventTime: e.time });
+      byPath.set(e.resource, {
+        severity: sev,
+        touchCount: 1,
+        lastEventTime: e.time,
+        confidence: conf,
+        mitre: e.mitre || null,
+      });
     } else {
       byPath.set(e.resource, {
         severity: higherSeverity(prev.severity, sev),
         touchCount: prev.touchCount + 1,
         lastEventTime: e.time, // events arrive newest-first from the caller's list order in practice, but this is just "most recently seen in this pass" either way
+        confidence: worseConfidence(prev.confidence, conf),
+        mitre: e.mitre || prev.mitre,
       });
     }
   }
@@ -69,6 +91,8 @@ export function buildManifestTree(manifest, events) {
           touchCount: hit?.touchCount || 0,
           lastEventTime: hit?.lastEventTime || null,
           onDisk: d.on_disk,
+          confidence: hit?.confidence || null,
+          mitre: hit?.mitre || null,
         };
       })
       // Loudest files first within a folder — the point of the tree is
@@ -90,4 +114,22 @@ export function buildManifestTree(manifest, events) {
 /** Total touch count across the whole tree — used for the sidebar section badge. */
 export function totalTouches(tree) {
   return tree.reduce((sum, folder) => sum + folder.touchCount, 0);
+}
+
+/**
+ * Attribution-confidence breakdown across every touched file in the tree —
+ * the same high/ambiguous/unknown categories backend/report.py reports on
+ * the raw event log, just computed here from the already-built tree so the
+ * Analysis panel can show it without a second pass over `events`.
+ */
+export function confidenceBreakdown(tree) {
+  const counts = { high: 0, ambiguous: 0, unknown: 0 };
+  for (const folder of tree) {
+    for (const file of folder.files) {
+      if (file.severity === "untouched") continue;
+      const key = file.confidence && counts[file.confidence] !== undefined ? file.confidence : "unknown";
+      counts[key] += 1;
+    }
+  }
+  return counts;
 }

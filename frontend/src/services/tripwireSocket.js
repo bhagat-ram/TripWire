@@ -12,6 +12,18 @@
  *
  * Do not rename these event names or field keys without updating both
  * sides — the backend build plan calls this contract frozen.
+ *
+ * Also wired here, separately from the decoy pipeline above: the optional
+ * full-system fanotify audit trail (server.py's _on_full_system_open /
+ * fanotify_watcher.py). This deliberately never touches classifier/panic —
+ * see that module's docstring — so it gets its own raw event type instead
+ * of being folded into tripwire_event:
+ *
+ *   WebSocket "fs_open": { pid, process_name, exe_path, file_path, ts }
+ *   REST GET /fs-audit: recent fs_open payloads, newest first, in-memory
+ *     only (capped at config.FULL_SYSTEM_MONITOR_BUFFER_SIZE)
+ *   REST POST /config/full-system-monitor: { enabled: bool } -> starts/stops
+ *     the fanotify watcher live (Linux + root only; failure is a normal 400)
  */
 
 import { io } from "socket.io-client";
@@ -30,9 +42,13 @@ export const BACKEND_URL =
  *   payload, emitted by the backend after a POST /action (suspend/kill/lock)
  *   actually runs — the source of truth for whether something real happened,
  *   as opposed to the dashboard's own optimistic local status update.
+ * @param {(open: object) => void} [handlers.onFsOpen] - raw fs_open payload,
+ *   emitted only while the full-system fanotify watcher is running. Not part
+ *   of the decoy detection pipeline (no severity/attribution) — a raw
+ *   open()-by-anyone audit trail for the System Audit page.
  * @param {(connected: boolean) => void} [handlers.onConnectionChange]
  */
-export function connectTripwireSocket({ onEvent, onPanic, onResponseAck, onConnectionChange }) {
+export function connectTripwireSocket({ onEvent, onPanic, onResponseAck, onFsOpen, onConnectionChange }) {
   const socket = io(BACKEND_URL, {
     transports: ["websocket", "polling"],
     reconnection: true,
@@ -47,6 +63,7 @@ export function connectTripwireSocket({ onEvent, onPanic, onResponseAck, onConne
   socket.on("tripwire_event", (payload) => onEvent?.(payload));
   socket.on("panic_mode", (payload) => onPanic?.(payload));
   socket.on("response_ack", (payload) => onResponseAck?.(payload));
+  socket.on("fs_open", (payload) => onFsOpen?.(payload));
 
   return socket;
 }
@@ -115,6 +132,31 @@ export function mapTripwireEvent(raw) {
     touchCount: raw.touch_count ?? null,
     recommendedAction: raw.recommended_action || null,
     placementLabel: raw.placement_label || null,
+  };
+}
+
+let _nextFsAuditClientId = 1;
+
+/**
+ * Maps a raw fs_open payload (from the "fs_open" socket event or a row of
+ * GET /fs-audit) to the shape SystemAuditPage renders. Much flatter than
+ * mapTripwireEvent — the full-system audit trail carries no severity,
+ * attribution, or MITRE mapping, only who opened what.
+ */
+export function mapFsOpenEvent(raw) {
+  const ts = raw.ts ? new Date(raw.ts * 1000) : new Date();
+  return {
+    // /fs-audit rows (and live fs_open payloads) don't carry a stable
+    // backend id the way /events rows do — this buffer is in-memory only
+    // on the server too, so a client-generated id is fine here.
+    id: `${ts.getTime()}-${_nextFsAuditClientId++}`,
+    pid: raw.pid ?? "—",
+    process: raw.process_name || "unknown",
+    exePath: raw.exe_path || null,
+    resource: raw.file_path,
+    filename: raw.file_path?.split(/[\\/]/).pop() || raw.file_path,
+    time: ts.toLocaleTimeString(),
+    receivedAt: Date.now(),
   };
 }
 

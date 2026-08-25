@@ -82,7 +82,6 @@ import panic as panic_mod
 from watcher import Watcher
 from report import generate_report
 import decoy_gen
-import fanotify_watcher
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
@@ -121,8 +120,7 @@ class TripwireServer:
     Kept as a class so tests can spin up isolated instances."""
 
     def __init__(self, db_path: str = config.DB_PATH, decoy_dir: Optional[str] = None,
-                 dry_run: bool = config.PANIC_DRY_RUN,
-                 full_system_monitor: bool = config.FULL_SYSTEM_MONITOR_ENABLED):
+                 dry_run: bool = config.PANIC_DRY_RUN):
         # When a decoy_dir is supplied (tests, simulator self-test), redirect
         # every real-filesystem decoy placement + the manifest into that one
         # isolated folder so we never touch the caller's actual HOME/tmp.
@@ -148,16 +146,6 @@ class TripwireServer:
         self.snapshotter = ProcessSnapshotter()
         self.panic       = PanicController(dry_run=dry_run)
         self.watcher     = Watcher(callback=self._on_fs_event)
-
-        # Optional, off by default, Linux+root only — see fanotify_watcher.py.
-        # Kept as a separate object/stream from self.watcher: it never calls
-        # self.classifier or self.panic, only its own in-memory buffer +
-        # WebSocket "fs_open".
-        self.full_system_monitor_requested = full_system_monitor
-        self.fs_monitor: Optional[fanotify_watcher.FanotifyWatcher] = None
-        self.fs_monitor_error: Optional[str] = None
-        self._fs_audit_buffer: list[dict] = []
-        self._fs_audit_lock = threading.Lock()
 
         self.app      = Flask(__name__)
         self.socketio = (SocketIO(self.app, cors_allowed_origins="*")
@@ -214,26 +202,6 @@ class TripwireServer:
         self._health_thread: Optional[threading.Thread] = None
 
         self._register_routes()
-
-    # ── full-system audit (fanotify) — deliberately does NOT touch
-    # classifier/panic, see fanotify_watcher.py's module docstring ────────
-
-    def _on_full_system_open(self, ev: fanotify_watcher.FileOpenEvent):
-        """fanotify reader thread calls this for every open() on the marked
-        mount(s). Must never raise — mirrors _on_fs_event's contract."""
-        d = {
-            "pid": ev.pid,
-            "process_name": ev.process_name,
-            "exe_path": ev.exe_path,
-            "file_path": ev.file_path,
-            "ts": ev.ts,
-        }
-        with self._fs_audit_lock:
-            self._fs_audit_buffer.append(d)
-            overflow = len(self._fs_audit_buffer) - config.FULL_SYSTEM_MONITOR_BUFFER_SIZE
-            if overflow > 0:
-                del self._fs_audit_buffer[:overflow]
-        self.socketio.emit("fs_open", d)
 
     # ── pipeline ──────────────────────────────────────────────────────────
 
@@ -322,7 +290,6 @@ class TripwireServer:
                 "last_event_ts":     last_ts,
                 "dead_letter_count": self.store.dead_letter_count(),
                 "dry_run":           self.panic.dry_run,
-                "fs_monitor_alive":  bool(self.fs_monitor and self.fs_monitor.is_alive()),
                 "ts":                time.time(),
             })
 
@@ -335,47 +302,11 @@ class TripwireServer:
             with self._state_lock:
                 last_ts = self._last_event_ts
             return jsonify({
-                "watcher_alive":         self.watcher.is_alive(),
-                "last_event_ts":         last_ts,
-                "dead_letter_count":     self.store.dead_letter_count(),
-                "dry_run":               self.panic.dry_run,
-                "decoy_count":           len(self.watcher.known_paths()),
-                "fs_monitor_requested":  self.full_system_monitor_requested,
-                "fs_monitor_alive":      bool(self.fs_monitor and self.fs_monitor.is_alive()),
-                "fs_monitor_mounts":     self.fs_monitor.marked_mounts() if self.fs_monitor else [],
-                "fs_monitor_error":      self.fs_monitor_error,
-            })
-
-        @self.app.get("/fs-audit")
-        def fs_audit():
-            """Recent full-system open() events (fanotify). In-memory only,
-            capped at config.FULL_SYSTEM_MONITOR_BUFFER_SIZE — see fanotify_
-            watcher.py's docstring for why this doesn't go through the same
-            severity pipeline as decoy events."""
-            limit = min(int(request.args.get("limit", 200)), config.FULL_SYSTEM_MONITOR_BUFFER_SIZE)
-            with self._fs_audit_lock:
-                return jsonify(list(reversed(self._fs_audit_buffer))[:limit])
-
-        @self.app.post("/config/full-system-monitor")
-        def set_full_system_monitor():
-            """Start/stop the fanotify full-system watcher live. Body:
-            { "enabled": bool }. Starting it can fail (not root, not Linux,
-            kernel too old) — that's returned as a normal 400 with the
-            reason, not a 500, since it's an expected/common outcome."""
-            body = request.get_json(silent=True) or {}
-            enabled = body.get("enabled")
-            if not isinstance(enabled, bool):
-                return jsonify({"error": "enabled must be a bool"}), 400
-            if enabled:
-                ok, err = self._start_fs_monitor()
-                if not ok:
-                    return jsonify({"error": err, "fs_monitor_alive": False}), 400
-            else:
-                self._stop_fs_monitor()
-            return jsonify({
-                "fs_monitor_alive":  bool(self.fs_monitor and self.fs_monitor.is_alive()),
-                "fs_monitor_mounts": self.fs_monitor.marked_mounts() if self.fs_monitor else [],
-                "fs_monitor_error":  self.fs_monitor_error,
+                "watcher_alive":     self.watcher.is_alive(),
+                "last_event_ts":     last_ts,
+                "dead_letter_count": self.store.dead_letter_count(),
+                "dry_run":           self.panic.dry_run,
+                "decoy_count":       len(self.watcher.known_paths()),
             })
 
         @self.app.get("/events")
@@ -456,18 +387,20 @@ class TripwireServer:
             """
             Manually trigger a response action from the web dashboard.
             Body: { "action": "suspend"|"kill"|"lock", "target": pid_or_path,
-                    "event_id": optional_int }
-            Manual dashboard actions (suspend/kill) always actually act on
-            the target, regardless of the global dry-run/live toggle — a
-            click on a specific case is a deliberate, per-target decision.
-            Only automatic response (the detection pipeline's trigger())
-            still respects dry_run. See panic.py's suspend()/kill()
-            force=True.
+                    "event_id": optional_int, "force": optional_bool }
+            Respects the current dry_run setting, EXCEPT "kill" with
+            force=true — that's the dashboard's manual "Kill process" button,
+            which is meant to actually terminate the specific process an
+            analyst picked even while the system is otherwise armed
+            dry-run. It only affects that one call: dry_run itself isn't
+            changed, so auto-response and every other action (including
+            "suspend" and "lock") keep respecting dry_run as before.
             """
-            body = request.get_json(silent=True) or {}
+            body  = request.get_json(silent=True) or {}
             act    = body.get("action")
             target = body.get("target")
             ev_id  = body.get("event_id")
+            force  = bool(body.get("force")) and act == "kill"
 
             if act not in ("suspend", "kill", "lock"):
                 return jsonify({"error": "action must be suspend | kill | lock"}), 400
@@ -480,9 +413,9 @@ class TripwireServer:
 
             try:
                 if act == "suspend":
-                    result = self.panic.suspend(int(target), force=True)
+                    result = self.panic.suspend(int(target))
                 elif act == "kill":
-                    result = self.panic.kill(int(target), force=True)
+                    result = self.panic.kill(int(target), force=force)
                 elif act == "lock":
                     # PanicController exposes lock_real_folder()/unlock_real_folder(),
                     # not lock_file() — this used to 500 on every "lock" action since
@@ -734,33 +667,6 @@ class TripwireServer:
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
-    def _start_fs_monitor(self) -> tuple[bool, Optional[str]]:
-        """Idempotent: no-op if already running. Returns (ok, error)."""
-        if self.fs_monitor and self.fs_monitor.is_alive():
-            return True, None
-        ok, reason = fanotify_watcher.is_available()
-        if not ok:
-            self.fs_monitor_error = reason
-            return False, reason
-        w = fanotify_watcher.FanotifyWatcher(
-            mounts=config.FULL_SYSTEM_MONITOR_MOUNTS,
-            callback=self._on_full_system_open,
-            ignore_prefixes=config.FULL_SYSTEM_MONITOR_IGNORE_PREFIXES,
-        )
-        try:
-            w.start()
-        except (PermissionError, OSError) as e:
-            self.fs_monitor_error = str(e)
-            return False, str(e)
-        self.fs_monitor = w
-        self.fs_monitor_error = w.last_error()  # partial-mount failures, if any
-        return True, None
-
-    def _stop_fs_monitor(self):
-        if self.fs_monitor:
-            self.fs_monitor.stop()
-            self.fs_monitor = None
-
     def start(self, ensure_decoys: bool = True):
         if ensure_decoys:
             summary = decoy_gen.generate_decoys()
@@ -768,13 +674,6 @@ class TripwireServer:
             self.watcher.refresh_known_paths(set(decoy_gen.all_decoy_paths()))
         self.snapshotter.start()
         self.watcher.start()
-        if self.full_system_monitor_requested:
-            ok, err = self._start_fs_monitor()
-            if not ok:
-                # Non-fatal: the decoy pipeline still works fine without
-                # this. Surfaced via /health's fs_monitor_error instead of
-                # crashing server startup over an optional, root-only feature.
-                print(f"[fanotify] full-system monitor NOT started: {err}")
         self._health_stop.clear()
         self._health_thread = threading.Thread(
             target=self._health_tick_loop, daemon=True, name="tripwire-health"
@@ -786,7 +685,6 @@ class TripwireServer:
         if self._health_thread:
             self._health_thread.join(timeout=2)
         self.watcher.stop()
-        self._stop_fs_monitor()
         self.snapshotter.stop()
         # Don't leak simulator subprocesses (especially persist mode, which
         # runs until something stops it) past the server's own lifetime.
@@ -1032,26 +930,16 @@ def _cli():
     parser.add_argument("--port", type=int, default=config.SERVER_PORT)
     parser.add_argument("--live", action="store_true",
                          help="disable Panic Mode dry-run (DANGEROUS: will really suspend/kill processes)")
-    parser.add_argument("--full-system-monitor", action="store_true",
-                         help="watch every file open() on config.FULL_SYSTEM_MONITOR_MOUNTS via "
-                              "fanotify, not just decoy files (Linux + must run as root)")
     args = parser.parse_args()
 
     if args.self_test:
         _run_self_test()
         return
 
-    srv = TripwireServer(dry_run=not args.live, full_system_monitor=args.full_system_monitor)
-    srv.start()
-    if args.full_system_monitor and not (srv.fs_monitor and srv.fs_monitor.is_alive()):
-        print(f"[fanotify] WARNING: --full-system-monitor requested but not running "
-              f"({srv.fs_monitor_error}). Try: sudo python3 server.py --full-system-monitor")
+    srv = TripwireServer(dry_run=not args.live)
     print(f"Tripwire server starting on http://{args.host}:{args.port} "
           f"(dry_run={srv.panic.dry_run}) — Ctrl+C to stop")
-    try:
-        srv.socketio.run(srv.app, host=args.host, port=args.port)
-    finally:
-        srv.stop()
+    srv.run(host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

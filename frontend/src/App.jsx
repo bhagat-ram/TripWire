@@ -101,9 +101,6 @@ function App() {
   return (
     <div className="app-shell">
       <Sidebar
-        events={events}
-        selectedCategoryId={selectedCategoryId}
-        onSelectCategory={setSelectedCategoryId}
         backendConnected={backendConnected}
         health={health}
         hasOpenCase={hasOpenCase}
@@ -160,6 +157,7 @@ function App() {
         <div id="section-incidents">
           <IncidentQueue
             incidents={incidents}
+            events={events}
             selectedIncidentId={selectedIncidentId}
             onSelect={openIncidentInDrawer}
             onRemove={removeIncident}

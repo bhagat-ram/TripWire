@@ -73,6 +73,33 @@ else:  # Linux and everything else
 
 DECOY_PLACEMENTS: list[dict] = _known
 
+# ─── Full-system file-open audit (fanotify, Linux + root only) ───────────
+# Separate from decoy monitoring above: instead of only watching planted
+# decoy files, fanotify_watcher.py can watch every open() on an entire
+# mount, so activity in folders nobody pre-configured still shows up.
+# Off by default because it needs CAP_SYS_ADMIN (root) and is a much
+# noisier data source than the decoy tripwire — enable explicitly with
+# --full-system-monitor (see server.py's CLI args) once you're ready to
+# run the backend as root.
+FULL_SYSTEM_MONITOR_ENABLED = False
+
+# Which mount(s) to watch when enabled. Defaults to just the HOME mount
+# (covers "malware opens a folder I didn't plant a decoy in" without also
+# firehosing every open() on the entire OS, e.g. every shared library the
+# whole system loads). Pass multiple paths to cover more than one mount,
+# e.g. FULL_SYSTEM_MONITOR_MOUNTS = [HOME, "/"] for the entire filesystem.
+FULL_SYSTEM_MONITOR_MOUNTS: list[str] = [HOME]
+
+# Never report opens under these prefixes — otherwise the watcher sees its
+# own log/DB writes as "suspicious" activity and self-feeds forever.
+FULL_SYSTEM_MONITOR_IGNORE_PREFIXES: list[str] = [LOGS_DIR, os.path.dirname(DB_PATH), _STAGING_DIR]
+
+# How many recent full-system open events to keep in memory for GET
+# /fs-audit. This stream is not written to the events DB (see fanotify_
+# watcher.py's module docstring for why) — it's a rolling in-memory buffer,
+# not a permanent record.
+FULL_SYSTEM_MONITOR_BUFFER_SIZE = 2000
+
 # Paths where decoys may never be written — checked in is_path_allowed().
 _BLOCKED_PREFIXES = [
     "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib64",

@@ -18,10 +18,17 @@ const STATUS_LABEL = {
  * endpoint and are logged locally only (see data/incidents.js). "Generate
  * report" always actually does something (a file download) regardless of
  * dry-run.
+ *
+ * Manual Suspend/Kill always act for real, regardless of the dry-run/live
+ * toggle — clicking a button on a specific case is a deliberate choice by
+ * an analyst. The dry-run/live toggle only governs the detection pipeline's
+ * own automatic response (see panic.py trigger() vs suspend()/kill()
+ * force=True).
  */
 export function ResponseBar({ incident, events, onRespond, lastActionResult, health }) {
   const isOpenCase = incident && (incident.status === "open" || incident.status === "escalated");
-  // Same "default to safe until known" logic as the Topbar dry-run pill.
+  // dryRun now only describes automatic response, shown in the banner below
+  // — it no longer changes what the Suspend/Kill buttons actually do.
   const dryRun = health?.dry_run !== false;
   // Set the moment Kill/Suspend is clicked, cleared only by a real
   // response_ack from the backend — see respondToIncident (incidents.js)
@@ -36,9 +43,9 @@ export function ResponseBar({ incident, events, onRespond, lastActionResult, hea
       </div>
 
       {dryRun && (
-        <span className="dryrun-warning-flag" title="Panic Mode is in dry-run — Kill and Suspend will only be logged, not actually sent, until you arm live mode from the top bar.">
+        <span className="dryrun-warning-flag" title="Panic Mode is in dry-run — this only affects automatic response from the detection pipeline. Manual Kill/Suspend below always act for real, on any target you click, in any mode.">
           <ShieldAlert size={11} />
-          Dry-run — Kill/Suspend won't actually act
+          Dry-run — auto-response only, manual actions always run
         </span>
       )}
 
@@ -90,22 +97,20 @@ export function ResponseBar({ incident, events, onRespond, lastActionResult, hea
         </button>
 
         <button
-          className={`secondary-button ${dryRun && isOpenCase ? "dryrun-armed-button" : ""}`}
+          className="secondary-button kill-button"
           disabled={!isOpenCase || isPending}
           onClick={() => onRespond(incident.id, "kill")}
-          title={dryRun ? "Dry-run — this will only log, not actually kill" : "Sends SIGTERM to the process for real"}
+          title="Sends SIGTERM to the process for real — manual actions always run, regardless of dry-run/live mode"
         >
           <Skull size={11} />
-          {incident?.pendingAction === "kill"
-            ? "Killing…"
-            : `Kill process${dryRun && isOpenCase ? " (dry-run)" : ""}`}
+          {incident?.pendingAction === "kill" ? "Killing…" : "Kill process"}
         </button>
 
         <button
-          className={`primary-button ${!isOpenCase && incident ? "contained-button" : ""} ${dryRun && isOpenCase ? "dryrun-armed-button" : ""}`}
+          className={`primary-button ${!isOpenCase && incident ? "contained-button" : ""}`}
           disabled={!isOpenCase || isPending}
           onClick={() => onRespond(incident.id, "suspend")}
-          title={isOpenCase ? (dryRun ? "Dry-run — this will only log, not actually suspend" : "Suspends the process for real") : undefined}
+          title={isOpenCase ? "Suspends the process for real — manual actions always run, regardless of dry-run/live mode" : undefined}
         >
           {incident && !isOpenCase ? (
             <>
@@ -115,9 +120,7 @@ export function ResponseBar({ incident, events, onRespond, lastActionResult, hea
           ) : (
             <>
               <Ban size={11} />
-              {incident?.pendingAction === "suspend"
-                ? "Suspending…"
-                : `Suspend process${dryRun && isOpenCase ? " (dry-run)" : ""}`}
+              {incident?.pendingAction === "suspend" ? "Suspending…" : "Suspend process"}
             </>
           )}
         </button>
