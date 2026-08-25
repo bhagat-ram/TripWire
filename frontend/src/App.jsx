@@ -4,12 +4,13 @@ import { Sidebar } from "./components/layout/Sidebar";
 import { Topbar } from "./components/layout/Topbar";
 import { OverviewCards } from "./components/common/OverviewCards";
 import { ActivityFeed } from "./components/activity/ActivityFeed";
-import { IncidentQueue } from "./components/incidents/IncidentQueue";
-import { DetectionPanel } from "./components/threat/DetectionPanel";
 import { ResponseBar } from "./components/response/ResponseBar";
 import { InvestigationDrawer } from "./components/modals/InvestigationDrawer";
 import { SettingsModal } from "./components/modals/SettingsModal";
-import { FolderTreeDiagram } from "./components/analysis/FolderTreeDiagram";
+import { AnalysisPage } from "./components/analysis/AnalysisPage";
+import { IncidentsPage } from "./components/incidents/IncidentsPage";
+import { DetectionPage } from "./components/threat/DetectionPage";
+import { SystemAuditPage } from "./components/audit/SystemAuditPage";
 
 import { useTripwireConnection } from "./hooks/useTripwireConnection";
 import { DECOY_CATEGORIES, categoryMatches } from "./data/decoyResources";
@@ -45,6 +46,10 @@ function App() {
     clearAllEvents,
     applyThresholds,
     setDryRun,
+    fsAuditEvents,
+    fsMonitorPending,
+    fsMonitorUpdateError,
+    setFullSystemMonitor,
   } = useTripwireConnection();
 
   const [selectedCategoryId, setSelectedCategoryId] = useState("all");
@@ -53,6 +58,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [severityFilter, setSeverityFilter] = useState(null); // null | "warning" | "critical"
   const [density, setDensity] = useState("comfortable"); // "comfortable" | "compact"
+  const [page, setPage] = useState("dashboard"); // "dashboard" | "analysis" | "incidents" | "detection" | "audit"
 
   const selectedCategory =
     DECOY_CATEGORIES.find((c) => c.id === selectedCategoryId) || DECOY_CATEGORIES[0];
@@ -107,6 +113,8 @@ function App() {
         allContainedOrDismissed={allContainedOrDismissed}
         openCaseCount={openCaseCount}
         onOpenSettings={() => setSettingsOpen(true)}
+        page={page}
+        onNavigatePage={setPage}
       />
 
       <main className="main-content">
@@ -120,42 +128,56 @@ function App() {
           onOpenSettings={() => setSettingsOpen(true)}
         />
 
-        <div id="section-overview">
-          <OverviewCards
-            events={events}
-            incidents={incidents}
-            severityFilter={severityFilter}
-            onToggleSeverityFilter={toggleSeverityFilter}
-            lastArrivedId={lastArrivedId}
-          />
-        </div>
+        {page === "dashboard" && (
+          <>
+            <div id="section-overview">
+              <OverviewCards
+                events={events}
+                incidents={incidents}
+                severityFilter={severityFilter}
+                onToggleSeverityFilter={toggleSeverityFilter}
+                lastArrivedId={lastArrivedId}
+              />
+            </div>
 
-        <div id="section-activity">
-          <ActivityFeed
-            filteredEvents={filteredEvents}
-            focusEventId={focusEvent?.id}
-            onSelectEvent={openEventInDrawer}
-            onSimulate={triggerSimulation}
-            onStopSimulate={stopSimulation}
-            simulationRunning={simulationRunning}
-            simulationError={simulationError}
-            onReset={clearSimulation}
-            onRemoveEvent={removeEvent}
-            onClearAllEvents={clearAllEvents}
-            severityFilter={severityFilter}
-            onToggleSeverityFilter={toggleSeverityFilter}
-            density={density}
-            onSetDensity={setDensity}
-            lastArrivedId={lastArrivedId}
-          />
-        </div>
+            <div id="section-activity">
+              <ActivityFeed
+                filteredEvents={filteredEvents}
+                focusEventId={focusEvent?.id}
+                onSelectEvent={openEventInDrawer}
+                onSimulate={triggerSimulation}
+                onStopSimulate={stopSimulation}
+                simulationRunning={simulationRunning}
+                simulationError={simulationError}
+                onReset={clearSimulation}
+                onRemoveEvent={removeEvent}
+                onClearAllEvents={clearAllEvents}
+                severityFilter={severityFilter}
+                onToggleSeverityFilter={toggleSeverityFilter}
+                density={density}
+                onSetDensity={setDensity}
+                lastArrivedId={lastArrivedId}
+              />
+            </div>
 
-        <div id="section-analysis">
-          <FolderTreeDiagram events={events} lastArrivedId={lastArrivedId} onSelectEvent={openEventInDrawer} />
-        </div>
+            <div id="section-response">
+              <ResponseBar
+                incident={selectedIncident}
+                events={events}
+                onRespond={respondToIncident}
+                lastActionResult={lastActionResult}
+                health={health}
+              />
+            </div>
+          </>
+        )}
 
-        <div id="section-incidents">
-          <IncidentQueue
+        {page === "analysis" && (
+          <AnalysisPage events={events} lastArrivedId={lastArrivedId} onSelectEvent={openEventInDrawer} />
+        )}
+
+        {page === "incidents" && (
+          <IncidentsPage
             incidents={incidents}
             events={events}
             selectedIncidentId={selectedIncidentId}
@@ -163,27 +185,27 @@ function App() {
             onRemove={removeIncident}
             onClearResolved={clearResolved}
           />
-        </div>
+        )}
 
-        <div id="section-detection">
-          <DetectionPanel
+        {page === "detection" && (
+          <DetectionPage
             incident={selectedIncident}
             events={events}
             thresholds={thresholds}
             thresholdUpdateError={thresholdUpdateError}
             onApplyThresholds={applyThresholds}
           />
-        </div>
+        )}
 
-        <div id="section-response">
-          <ResponseBar
-            incident={selectedIncident}
-            events={events}
-            onRespond={respondToIncident}
-            lastActionResult={lastActionResult}
+        {page === "audit" && (
+          <SystemAuditPage
+            events={fsAuditEvents}
             health={health}
+            fsMonitorPending={fsMonitorPending}
+            fsMonitorUpdateError={fsMonitorUpdateError}
+            onSetFullSystemMonitor={setFullSystemMonitor}
           />
-        </div>
+        )}
 
         <SettingsModal
           open={settingsOpen}
