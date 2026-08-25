@@ -1,21 +1,28 @@
 """
 fanotify_watcher.py — Stage 2b (optional, Linux-only)
-System-wide file-OPEN audit, independent of the decoy tripwire in
+System-wide file-CHANGE audit, independent of the decoy tripwire in
 watcher.py. Where watcher.py only sees activity on a pre-planted set of
 decoy paths (inotify requires watching known directories ahead of time),
 this uses Linux's fanotify API with FAN_MARK_FILESYSTEM to see every file
-opened by every process on a whole mount — including folders nobody
-configured, decoy or not.
+actually modified by any process on a whole mount — including folders
+nobody configured, decoy or not.
+
+Deliberately watches FAN_CLOSE_WRITE, not FAN_OPEN: FAN_OPEN fires on every
+read-only open too (your editor loading a file, the shell resolving a
+binary, the browser reading its cache, a package manager statting things),
+which is mostly noise and not a "change" at all. FAN_CLOSE_WRITE only fires
+once a file that was opened for writing is closed, i.e. its content was
+actually (or at least potentially) modified — that's the real signal for
+an audit trail meant to answer "what changed", not "what was touched".
 
 This is intentionally a SEPARATE stream from the decoy pipeline
 (_on_fs_event / classifier.py in server.py), not a replacement for it:
 classifier.py's severity scoring is calibrated on "how many times was a
-*decoy* touched in N seconds" — feeding it every open() on the disk (your
-editor, shell, browser, package manager, etc.) would make that math
-meaningless and bury real signal in normal noise. Full-system events are
-instead exposed as their own raw audit trail (REST /fs-audit, WebSocket
-"fs_open") for manual review, correlation, or a future dedicated scorer —
-they never touch Classifier/PanicController.
+*decoy* touched in N seconds" — feeding it every write on the disk would
+make that math meaningless and bury real signal in normal noise.
+Full-system events are instead exposed as their own raw audit trail (REST
+/fs-audit, WebSocket "fs_open") for manual review, correlation, or a future
+dedicated scorer — they never touch Classifier/PanicController.
 
 REQUIREMENTS (hard Linux/root constraints, not configurable away):
   - Linux only. No macOS/Windows equivalent exists in this codebase.
@@ -129,8 +136,12 @@ def is_available() -> tuple[bool, str]:
         return False, f"fanotify_init failed (errno={errno})"
 
     try:
+        # Probe with the same mask actually used by FanotifyWatcher below
+        # (FAN_CLOSE_WRITE) so availability reflects the real code path,
+        # not a different event type that might behave differently on some
+        # kernel/filesystem combos.
         rc = libc.fanotify_mark(fd, FAN_MARK_ADD | FAN_MARK_FILESYSTEM,
-                                 FAN_OPEN, AT_FDCWD, b"/")
+                                 FAN_CLOSE_WRITE, AT_FDCWD, b"/")
         if rc < 0:
             errno = ctypes.get_errno()
             if errno == 95:  # ENOSYS / EOPNOTSUPP-ish depending on kernel
@@ -160,10 +171,14 @@ def _proc_name(pid: int) -> tuple[str, Optional[str]]:
 
 class FanotifyWatcher:
     """
-    Watches one or more whole filesystems (mount points) for FAN_OPEN
-    (any file opened, by any process) via fanotify. Unlike watcher.py's
-    Watcher, there is no known-paths filter — every open under the marked
-    mount is reported; the caller decides what to do with the firehose.
+    Watches one or more whole filesystems (mount points) for FAN_CLOSE_WRITE
+    (a file that was opened for writing has been closed — i.e. it actually
+    changed, or at least was writable-opened) via fanotify. Unlike
+    watcher.py's Watcher, there is no known-paths filter — every write
+    under the marked mount is reported; the caller decides what to do with
+    the firehose. Read-only opens (FAN_OPEN) are deliberately NOT watched
+    here — see the module docstring for why that would be mostly noise for
+    a change-audit trail.
 
     Usage:
         ok, reason = is_available()
@@ -178,7 +193,7 @@ class FanotifyWatcher:
         self,
         mounts: list[str],
         callback: Optional[EventCallback] = None,
-        event_mask: int = FAN_OPEN,
+        event_mask: int = FAN_CLOSE_WRITE,
         ignore_prefixes: Optional[list[str]] = None,
     ):
         if not mounts:
@@ -353,7 +368,7 @@ def _run_self_test():
         with lock:
             received.append(ev)
 
-    print("[1/2] marking filesystem + detecting an open() from another process ... ", end="", flush=True)
+    print("[1/2] marking filesystem + detecting a write from another process ... ", end="", flush=True)
     w = FanotifyWatcher(mounts=[tmp], callback=cb)
     w.start()
     time.sleep(0.2)

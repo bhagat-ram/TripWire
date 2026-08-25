@@ -6,7 +6,7 @@ const PAGE_SIZE_OPTIONS = [10, 25, 50];
 /**
  * System Audit — the optional full-system fanotify feed (fanotify_watcher.py
  * / server.py's /fs-audit + "fs_open"), separate from the decoy-only
- * Activity page. This is every open() on the marked mount(s), by any
+ * Activity page. This is every file *write* on the marked mount(s), by any
  * process, with no severity/attribution/classification attached — see
  * fanotify_watcher.py's module docstring for why it deliberately never
  * touches the classifier/panic pipeline. It's a raw audit trail for manual
@@ -37,7 +37,7 @@ export function SystemAuditPage({ events, health, fsMonitorPending, fsMonitorUpd
   const rangeEnd = Math.min(startIdx + pageSize, events.length);
 
   const statusLine = !requested
-    ? "Off — every open() on protected mounts, not just decoy touches, will be logged here once enabled."
+    ? "Off — every file write on protected mounts, not just decoy touches, will be logged here once enabled."
     : alive
     ? mounts.length
       ? `Watching ${mounts.join(", ")}`
@@ -51,7 +51,7 @@ export function SystemAuditPage({ events, health, fsMonitorPending, fsMonitorUpd
       <div className="section-heading">
         <div>
           <h2>System audit</h2>
-          <p>Raw open() activity across the filesystem — not classified, not scored, logged only.</p>
+          <p>Raw file-write activity across the filesystem — not classified, not scored, logged only.</p>
         </div>
 
         <div className="activity-controls">
@@ -89,7 +89,7 @@ export function SystemAuditPage({ events, health, fsMonitorPending, fsMonitorUpd
             <h3>No audit activity yet</h3>
             <p>
               {alive
-                ? "Watching — open() events across the marked mount(s) will appear here as they happen."
+                ? "Watching — file-write events across the marked mount(s) will appear here as they happen."
                 : "Enable the full-system watcher above to start logging every file open, not just decoy touches."}
             </p>
           </div>

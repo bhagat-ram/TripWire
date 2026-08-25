@@ -219,8 +219,11 @@ class TripwireServer:
     # classifier/panic, see fanotify_watcher.py's module docstring ────────
 
     def _on_full_system_open(self, ev: fanotify_watcher.FileOpenEvent):
-        """fanotify reader thread calls this for every open() on the marked
-        mount(s). Must never raise — mirrors _on_fs_event's contract."""
+        """fanotify reader thread calls this for every file WRITE
+        (FAN_CLOSE_WRITE) on the marked mount(s) — not every open(), see
+        fanotify_watcher.py's docstring. Must never raise — mirrors
+        _on_fs_event's contract. Socket event name ("fs_open") and field
+        names are kept as-is for wire compatibility with the frontend."""
         d = {
             "pid": ev.pid,
             "process_name": ev.process_name,
