@@ -189,6 +189,29 @@ AUTO_RESPONSE_RULES: dict[str, list[str]] = {
 # post-suspend touches — no analyst click required.
 AUTO_ESCALATE_TO_KILL_AFTER_TOUCHES = 3
 
+# ─── Instant-kill (top-priority first-touch containment) ─────────────────
+# Waiting for CRITICAL_TOUCH_THRESHOLD touches (see above) before killing
+# gives a fast encryptor time to churn through several real files first —
+# the whole point of a decoy is that ONE touch is already proof, so there's
+# nothing to wait for. When enabled, the attributed process is killed the
+# instant it touches its Nth decoy (N = INSTANT_KILL_MIN_TOUCHES, default
+# 1 = the very first touch), completely independent of the classifier's
+# info/warning/critical window and AUTO_RESPONSE_RULES. It still goes
+# through panic.py's normal kill() path underneath, so the allowlist,
+# dry-run/live toggle, and idempotency guarantees all still apply — this
+# only changes *when* kill() gets called, not the safety around it.
+INSTANT_KILL_ENABLED = os.environ.get("TRIPWIRE_INSTANT_KILL", "1") == "1"
+INSTANT_KILL_MIN_TOUCHES = 1
+
+# Best-effort OS scheduling-priority boost applied to THIS process right
+# before an instant-kill fires (see panic.py's PanicController._boost_
+# priority), so the containment signal is scheduled ahead of a CPU-bound
+# encryptor rather than waiting behind it for a timeslice. Never raises if
+# the OS/permissions refuse the boost — it's a best-effort latency
+# optimization, not a correctness requirement, and the kill still proceeds
+# either way.
+PANIC_HIGH_OS_PRIORITY = os.environ.get("TRIPWIRE_HIGH_PRIORITY", "1") == "1"
+
 # ─── Server (Stage 6) ─────────────────────────────────────────────────────
 SERVER_HOST = "127.0.0.1"
 SERVER_PORT  = 5050

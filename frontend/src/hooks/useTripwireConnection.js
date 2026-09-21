@@ -52,6 +52,10 @@ function clearAllEventsFromBackend() {
   fetch(`${BACKEND_URL}/events`, { method: "DELETE" }).catch(() => {});
 }
 
+function clearFsAuditEventsFromBackend() {
+  fetch(`${BACKEND_URL}/fs-audit`, { method: "DELETE" }).catch(() => {});
+}
+
 /**
  * Owns every piece of state App.jsx previously held directly: the live
  * WebSocket connection to the backend, health polling, the event feed, and
@@ -438,6 +442,12 @@ export function useTripwireConnection() {
     clearAllEventsFromBackend();
   };
 
+  /** Clears the full-system audit buffer (System Audit page) — separate from clearAllEvents since it's a different in-memory buffer, not the events table. */
+  const clearFsAuditEvents = () => {
+    setFsAuditEvents([]);
+    clearFsAuditEventsFromBackend();
+  };
+
   /** Live-updates warning/critical thresholds on the backend (best-effort). */
   const applyThresholds = async (next) => {
     setThresholdsState(next); // optimistic — sliders should feel instant
@@ -556,6 +566,7 @@ export function useTripwireConnection() {
               fs_monitor_alive: body.fs_monitor_alive ?? (res.ok ? prev.fs_monitor_alive : prev.fs_monitor_alive),
               fs_monitor_mounts: body.fs_monitor_mounts ?? prev.fs_monitor_mounts,
               fs_monitor_error: "fs_monitor_error" in body ? body.fs_monitor_error : prev.fs_monitor_error,
+              fs_monitor_backend: "fs_monitor_backend" in body ? body.fs_monitor_backend : prev.fs_monitor_backend,
             }
           : prev
       );
@@ -600,6 +611,7 @@ export function useTripwireConnection() {
     applyThresholds,
     setDryRun,
     fsAuditEvents,
+    clearFsAuditEvents,
     fsMonitorPending,
     fsMonitorUpdateError,
     setFullSystemMonitor,

@@ -230,6 +230,13 @@ class TripwireServer:
             "exe_path": ev.exe_path,
             "file_path": ev.file_path,
             "ts": ev.ts,
+            # "modified" | "deleted" | "renamed" — fanotify_watcher.py computes
+            # this identically for both the fanotify path and the inotify
+            # fallback path, so it's safe to pass straight through here rather
+            # than re-deriving it. Was previously dropped on the way to the
+            # wire, which is why the System Audit page could never show
+            # anything but "modified".
+            "action": ev.action,
         }
         with self._fs_audit_lock:
             self._fs_audit_buffer.append(d)
@@ -271,14 +278,44 @@ class TripwireServer:
 
             pid = attrib["pid"]
 
-            # Repeat-offense check FIRST, on every touch (any severity): if this
+            # Instant-kill FIRST, ahead of everything else below: top-priority
+            # containment for a decoy touch that looks like an encryptor at
+            # work. Fires the moment the attributed process crosses
+            # INSTANT_KILL_MIN_TOUCHES (default 1 — the very first touch),
+            # independent of the classifier's info/warning/critical window
+            # and AUTO_RESPONSE_RULES entirely. Goes through panic.py's
+            # instant_kill(), which reuses kill()'s allowlist/dry-run/
+            # idempotency/error-handling rather than reimplementing them.
+            instant_killed = False
+            if (pid is not None and config.INSTANT_KILL_ENABLED
+                    and result.touch_count >= config.INSTANT_KILL_MIN_TOUCHES):
+                instant_result = self.panic.instant_kill(
+                    pid, file_path=file_path, touch_count=result.touch_count
+                )
+                instant_killed = instant_result.status == "succeeded"
+                self.socketio.emit("panic_mode", {
+                    "suspended":  [],
+                    "killed":     self.panic._killed_pid,
+                    "dry_run":    instant_result.dry_run,
+                    "actions":    [instant_result.to_dict()],
+                    "mitigation_status": panic_mod.mitigation_status(
+                        [instant_result], self.panic.dry_run
+                    ),
+                    "event_id":   ev_id,
+                    "escalation": False,
+                    "instant_kill": True,
+                })
+
+            # Repeat-offense check, on every touch (any severity): if this
             # PID was already suspended by an earlier critical hit and it's
             # still generating touches, that's live evidence the suspend didn't
             # actually stop it (dry-run / bypass / failed). Auto-escalate to
             # kill once it crosses the threshold — don't wait for another
             # critical classification, which may never come if the window
-            # already emptied out.
-            if pid is not None:
+            # already emptied out. Skipped if instant-kill already fired for
+            # this touch — no reason to also chase suspend/escalation state
+            # for a pid we just killed.
+            if pid is not None and not instant_killed:
                 post_count = self.panic.note_post_suspend_touch(pid)
                 if post_count and self.panic.should_escalate_to_kill(pid):
                     kill_result = self.panic.escalate_to_kill(pid)
@@ -297,7 +334,7 @@ class TripwireServer:
                     })
 
             rules = config.AUTO_RESPONSE_RULES.get(result.severity, [])
-            if rules and rules != ["monitor"]:
+            if rules and rules != ["monitor"] and not instant_killed:
                 suspects = [pid] if pid is not None else []
                 panic_result = self.panic.trigger(suspects, rules=rules)
                 # panic.trigger already returns "actions" as a list of dicts
@@ -347,6 +384,13 @@ class TripwireServer:
                 "fs_monitor_alive":      bool(self.fs_monitor and self.fs_monitor.is_alive()),
                 "fs_monitor_mounts":     self.fs_monitor.marked_mounts() if self.fs_monitor else [],
                 "fs_monitor_error":      self.fs_monitor_error,
+                # "fanotify" | "inotify" | None (not running) — FanotifyWatcher
+                # already tracks which backend it actually started with (see
+                # its .backend attribute / automatic Termux fallback), it just
+                # wasn't surfaced to the API before. The System Audit page
+                # needs this to label the feed correctly instead of assuming
+                # fanotify.
+                "fs_monitor_backend":    self.fs_monitor.backend if self.fs_monitor else None,
             })
 
         @self.app.get("/fs-audit")
@@ -358,6 +402,18 @@ class TripwireServer:
             limit = min(int(request.args.get("limit", 200)), config.FULL_SYSTEM_MONITOR_BUFFER_SIZE)
             with self._fs_audit_lock:
                 return jsonify(list(reversed(self._fs_audit_buffer))[:limit])
+
+        @self.app.delete("/fs-audit")
+        def clear_fs_audit():
+            """Wipe the in-memory full-system audit buffer — mirrors DELETE
+            /events for the decoy activity feed. This buffer isn't persisted
+            to SQLite (see fanotify_watcher.py's docstring), so this is the
+            only reset available for it; there's no `before` cutoff variant
+            since there's no timestamp index to filter on cheaply here."""
+            with self._fs_audit_lock:
+                count = len(self._fs_audit_buffer)
+                self._fs_audit_buffer.clear()
+            return jsonify({"deleted": count})
 
         @self.app.post("/config/full-system-monitor")
         def set_full_system_monitor():
@@ -376,9 +432,10 @@ class TripwireServer:
             else:
                 self._stop_fs_monitor()
             return jsonify({
-                "fs_monitor_alive":  bool(self.fs_monitor and self.fs_monitor.is_alive()),
-                "fs_monitor_mounts": self.fs_monitor.marked_mounts() if self.fs_monitor else [],
-                "fs_monitor_error":  self.fs_monitor_error,
+                "fs_monitor_alive":   bool(self.fs_monitor and self.fs_monitor.is_alive()),
+                "fs_monitor_mounts":  self.fs_monitor.marked_mounts() if self.fs_monitor else [],
+                "fs_monitor_error":   self.fs_monitor_error,
+                "fs_monitor_backend": self.fs_monitor.backend if self.fs_monitor else None,
             })
 
         @self.app.get("/events")

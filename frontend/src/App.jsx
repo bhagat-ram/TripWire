@@ -3,13 +3,13 @@ import { useState } from "react";
 import { Sidebar } from "./components/layout/Sidebar";
 import { Topbar } from "./components/layout/Topbar";
 import { OverviewCards } from "./components/common/OverviewCards";
-import { ActivityFeed } from "./components/activity/ActivityFeed";
+import { ActivityPage } from "./components/activity/ActivityPage";
+import { FolderTreeDiagram } from "./components/analysis/FolderTreeDiagram";
+import { IncidentQueue } from "./components/incidents/IncidentQueue";
+import { DetectionPanel } from "./components/threat/DetectionPanel";
 import { ResponseBar } from "./components/response/ResponseBar";
 import { InvestigationDrawer } from "./components/modals/InvestigationDrawer";
-import { SettingsModal } from "./components/modals/SettingsModal";
-import { AnalysisPage } from "./components/analysis/AnalysisPage";
-import { IncidentsPage } from "./components/incidents/IncidentsPage";
-import { DetectionPage } from "./components/threat/DetectionPage";
+import { SettingsPage } from "./components/settings/SettingsPage";
 import { SystemAuditPage } from "./components/audit/SystemAuditPage";
 
 import { useTripwireConnection } from "./hooks/useTripwireConnection";
@@ -47,6 +47,7 @@ function App() {
     applyThresholds,
     setDryRun,
     fsAuditEvents,
+    clearFsAuditEvents,
     fsMonitorPending,
     fsMonitorUpdateError,
     setFullSystemMonitor,
@@ -55,10 +56,9 @@ function App() {
   const [selectedCategoryId, setSelectedCategoryId] = useState("all");
   const [focusEvent, setFocusEvent] = useState(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [severityFilter, setSeverityFilter] = useState(null); // null | "warning" | "critical"
   const [density, setDensity] = useState("comfortable"); // "comfortable" | "compact"
-  const [page, setPage] = useState("dashboard"); // "dashboard" | "analysis" | "incidents" | "detection" | "audit"
+  const [page, setPage] = useState("dashboard"); // "dashboard" | "activity" | "settings" | "audit"
 
   const selectedCategory =
     DECOY_CATEGORIES.find((c) => c.id === selectedCategoryId) || DECOY_CATEGORIES[0];
@@ -88,8 +88,19 @@ function App() {
     ? "critical"
     : "warning";
 
+  const dryRun = health ? health.dry_run !== false : true;
+
   const toggleSeverityFilter = (sev) =>
     setSeverityFilter((prev) => (prev === sev ? null : sev));
+
+  // Overview's Warning/Critical cards toggle the same filter Activity uses,
+  // but since Activity is its own page now (not inline on the dashboard),
+  // toggling from Overview needs to also navigate there or the filter
+  // change would be invisible.
+  const toggleSeverityFilterFromOverview = (sev) => {
+    toggleSeverityFilter(sev);
+    setPage("activity");
+  };
 
   const openEventInDrawer = (event) => {
     const owningIncident = incidents.find((inc) => inc.eventIds.includes(event.id));
@@ -111,8 +122,6 @@ function App() {
         health={health}
         hasOpenCase={hasOpenCase}
         allContainedOrDismissed={allContainedOrDismissed}
-        openCaseCount={openCaseCount}
-        onOpenSettings={() => setSettingsOpen(true)}
         page={page}
         onNavigatePage={setPage}
       />
@@ -125,7 +134,7 @@ function App() {
           health={health}
           dryRunPending={dryRunPending}
           onSetDryRun={setDryRun}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onNavigatePage={setPage}
         />
 
         {page === "dashboard" && (
@@ -135,28 +144,33 @@ function App() {
                 events={events}
                 incidents={incidents}
                 severityFilter={severityFilter}
-                onToggleSeverityFilter={toggleSeverityFilter}
+                onToggleSeverityFilter={toggleSeverityFilterFromOverview}
                 lastArrivedId={lastArrivedId}
               />
             </div>
 
-            <div id="section-activity">
-              <ActivityFeed
-                filteredEvents={filteredEvents}
-                focusEventId={focusEvent?.id}
-                onSelectEvent={openEventInDrawer}
-                onSimulate={triggerSimulation}
-                onStopSimulate={stopSimulation}
-                simulationRunning={simulationRunning}
-                simulationError={simulationError}
-                onReset={clearSimulation}
-                onRemoveEvent={removeEvent}
-                onClearAllEvents={clearAllEvents}
-                severityFilter={severityFilter}
-                onToggleSeverityFilter={toggleSeverityFilter}
-                density={density}
-                onSetDensity={setDensity}
-                lastArrivedId={lastArrivedId}
+            <div id="section-analysis">
+              <FolderTreeDiagram events={events} lastArrivedId={lastArrivedId} onSelectEvent={openEventInDrawer} />
+            </div>
+
+            <div id="section-incidents">
+              <IncidentQueue
+                incidents={incidents}
+                events={events}
+                selectedIncidentId={selectedIncidentId}
+                onSelect={openIncidentInDrawer}
+                onRemove={removeIncident}
+                onClearResolved={clearResolved}
+              />
+            </div>
+
+            <div id="section-detection">
+              <DetectionPanel
+                incident={selectedIncident}
+                events={events}
+                thresholds={thresholds}
+                thresholdUpdateError={thresholdUpdateError}
+                onApplyThresholds={applyThresholds}
               />
             </div>
 
@@ -172,28 +186,39 @@ function App() {
           </>
         )}
 
-        {page === "analysis" && (
-          <AnalysisPage events={events} lastArrivedId={lastArrivedId} onSelectEvent={openEventInDrawer} />
-        )}
-
-        {page === "incidents" && (
-          <IncidentsPage
-            incidents={incidents}
-            events={events}
-            selectedIncidentId={selectedIncidentId}
-            onSelect={openIncidentInDrawer}
-            onRemove={removeIncident}
-            onClearResolved={clearResolved}
+        {page === "activity" && (
+          <ActivityPage
+            filteredEvents={filteredEvents}
+            focusEventId={focusEvent?.id}
+            onSelectEvent={openEventInDrawer}
+            onSimulate={triggerSimulation}
+            onStopSimulate={stopSimulation}
+            simulationRunning={simulationRunning}
+            simulationError={simulationError}
+            onReset={clearSimulation}
+            onRemoveEvent={removeEvent}
+            onClearAllEvents={clearAllEvents}
+            severityFilter={severityFilter}
+            onToggleSeverityFilter={toggleSeverityFilter}
+            density={density}
+            onSetDensity={setDensity}
+            lastArrivedId={lastArrivedId}
           />
         )}
 
-        {page === "detection" && (
-          <DetectionPage
-            incident={selectedIncident}
-            events={events}
+        {page === "settings" && (
+          <SettingsPage
+            rules={autoResponseRules}
+            escalateAfterTouches={escalateAfterTouches}
+            onApplyAutoResponse={applyAutoResponse}
+            autoResponseUpdateError={autoResponseUpdateError}
+            autoResponsePending={autoResponsePending}
             thresholds={thresholds}
             thresholdUpdateError={thresholdUpdateError}
             onApplyThresholds={applyThresholds}
+            dryRun={dryRun}
+            dryRunPending={dryRunPending}
+            onSetDryRun={setDryRun}
           />
         )}
 
@@ -204,18 +229,9 @@ function App() {
             fsMonitorPending={fsMonitorPending}
             fsMonitorUpdateError={fsMonitorUpdateError}
             onSetFullSystemMonitor={setFullSystemMonitor}
+            onClear={clearFsAuditEvents}
           />
         )}
-
-        <SettingsModal
-          open={settingsOpen}
-          onClose={() => setSettingsOpen(false)}
-          rules={autoResponseRules}
-          escalateAfterTouches={escalateAfterTouches}
-          onApply={applyAutoResponse}
-          updateError={autoResponseUpdateError}
-          pending={autoResponsePending}
-        />
 
         {drawerOpen && (
           <InvestigationDrawer

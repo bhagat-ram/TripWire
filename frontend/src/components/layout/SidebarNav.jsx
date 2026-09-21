@@ -1,10 +1,6 @@
 import {
   LayoutDashboard,
   Activity,
-  GitBranch,
-  ShieldAlert,
-  Radar,
-  Zap,
   SlidersHorizontal,
   ScanEye,
 } from "lucide-react";
@@ -13,26 +9,26 @@ import {
  * Real navigation, not a placeholder menu: every item does real work.
  * Two flavors live in the same "Workflow" group now:
  *
- *  - `type: "scroll"` — Overview, Live activity, Response — still jump
- *    (smooth-scroll) to a section on the one-page dashboard, exactly as
- *    before.
- *  - `type: "page"` — Analysis, Incidents, Detection — each now its own
- *    routed page (App.jsx's `page` state), not a subsection. These three
- *    were the ones with real room to grow (bigger visuals, status
- *    filtering, KPI strips — see AnalysisPage/IncidentsPage/DetectionPage),
- *    so they graduated off the single-page scroll; Overview/Live
- *    activity/Response stay put for now.
+ *  - `type: "scroll"` — Overview — still jumps (smooth-scroll) to a section
+ *    on the one-page dashboard, exactly as before.
+ *  - `type: "page"` — Live activity, Settings — their own routed pages
+ *    (App.jsx's `page` state), not subsections.
  *
- * "Automation rules" still opens the settings modal instead of navigating
- * anywhere, since that's a modal, not a page.
+ * Live activity used to be a scroll target too, but on most screens it sat
+ * close enough to Overview that jumping to it didn't look like anything
+ * happened — so it graduated to its own page (ActivityPage), same as
+ * Settings, and is no longer duplicated inline on the dashboard.
+ *
+ * Analysis/Incidents/Detection/Response used to be routed pages here too,
+ * but they were blank placeholders that only ever duplicated the sections
+ * already on the one-page dashboard, so they've been removed in favor of
+ * the Settings page (thresholds, automation rules, dry-run — all
+ * previously scattered across a modal and other pages).
  */
 const SECTIONS = [
   { id: "section-overview", label: "Overview", icon: LayoutDashboard, type: "scroll" },
-  { id: "section-activity", label: "Live activity", icon: Activity, type: "scroll" },
-  { id: "analysis", label: "Analysis", icon: GitBranch, type: "page" },
-  { id: "incidents", label: "Incidents", icon: ShieldAlert, type: "page", badge: "openCases" },
-  { id: "detection", label: "Detection", icon: Radar, type: "page" },
-  { id: "section-response", label: "Response", icon: Zap, type: "scroll", badge: "mode" },
+  { id: "activity", label: "Live activity", icon: Activity, type: "page" },
+  { id: "settings", label: "Settings", icon: SlidersHorizontal, type: "page", badge: "mode" },
 ];
 
 // System Audit — a different data source entirely (fanotify_watcher.py's
@@ -41,7 +37,7 @@ const SECTIONS = [
 // visible rather than blending into Workflow.
 const SYSTEM_SECTIONS = [{ id: "audit", label: "System audit", icon: ScanEye, badge: "fsMonitor" }];
 
-export function SidebarNav({ activeId, openCaseCount, dryRun, onOpenSettings, page, onNavigatePage, fsMonitorAlive }) {
+export function SidebarNav({ activeId, dryRun, page, onNavigatePage, fsMonitorAlive }) {
   const jumpTo = (id) => {
     // Scroll items only make sense on the dashboard page — if some other
     // page is showing, hop back first so the section being scrolled to
@@ -66,12 +62,11 @@ export function SidebarNav({ activeId, openCaseCount, dryRun, onOpenSettings, pa
               className={`nav-item ${isActive ? "active" : ""}`}
               onClick={() => (isPage ? onNavigatePage?.(item.id) : jumpTo(item.id))}
             >
-              <Icon size={13} />
+              <span className="nav-icon">
+                <Icon size={14} />
+              </span>
               <span>{item.label}</span>
 
-              {item.badge === "openCases" && openCaseCount > 0 && (
-                <span className="nav-badge nav-badge-danger">{openCaseCount}</span>
-              )}
               {item.badge === "mode" && (
                 <span className={`nav-badge ${dryRun ? "" : "nav-badge-live"}`}>
                   {dryRun ? "dry" : "live"}
@@ -80,11 +75,6 @@ export function SidebarNav({ activeId, openCaseCount, dryRun, onOpenSettings, pa
             </button>
           );
         })}
-
-        <button className="nav-item nav-item-modal" onClick={onOpenSettings} title="Configure automated response rules">
-          <SlidersHorizontal size={13} />
-          <span>Automation rules</span>
-        </button>
       </div>
 
       <div className="sidebar-section sidebar-nav">
@@ -98,7 +88,9 @@ export function SidebarNav({ activeId, openCaseCount, dryRun, onOpenSettings, pa
               className={`nav-item ${page === item.id ? "active" : ""}`}
               onClick={() => onNavigatePage?.(item.id)}
             >
-              <Icon size={13} />
+              <span className="nav-icon">
+                <Icon size={14} />
+              </span>
               <span>{item.label}</span>
 
               {item.badge === "fsMonitor" && (

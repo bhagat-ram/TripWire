@@ -1,29 +1,25 @@
 import { ChevronDown } from "lucide-react";
+import tripwireLogo from "../../assets/tripwire-logo.png";
 import { useScrollSpy } from "../../hooks/useScrollSpy";
 import { SidebarNav } from "./SidebarNav";
 
-const NAV_SECTION_IDS = [
-  "section-overview",
-  "section-activity",
-  "section-response",
-];
+const NAV_SECTION_IDS = ["section-overview"];
 
 /**
  * Sidebar — workflow navigation + connection status.
  *
- * Nav items are a mix now: Overview/Live activity/Response are still
- * scroll-spy sections on the one-page dashboard (NAV_SECTION_IDS above
- * only tracks those three), while Analysis/Incidents/Detection graduated
- * into their own routed pages — see App.jsx's `page` state and
- * SidebarNav's SECTIONS array for which is which.
+ * Only Overview is still a scroll-spy section on the one-page dashboard
+ * now (NAV_SECTION_IDS above). Live activity and Settings are both routed
+ * pages — see App.jsx's `page` state and SidebarNav's SECTIONS array.
+ * (Analysis/Incidents/Detection/Response used to be routed pages here too,
+ * but they were blank placeholders that only duplicated the dashboard's
+ * own sections, so they've been removed — Settings replaces that slot.)
  */
 export function Sidebar({
   backendConnected,
   health,
   hasOpenCase,
   allContainedOrDismissed,
-  openCaseCount,
-  onOpenSettings,
   page,
   onNavigatePage,
 }) {
@@ -33,15 +29,11 @@ export function Sidebar({
     <aside className="sidebar">
       <div className="brand">
         <div className="brand-mark">
-          {/* Two posts + a taut line between them, snapped by a diamond
-              trip-spark at the break point — the mark reads as "tripwire"
-              rather than a generic shield/lock, matching the product name. */}
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="4" cy="19" r="2.6" fill="currentColor" />
-            <circle cx="20" cy="5" r="2.6" fill="currentColor" />
-            <path d="M6 17.3 L10.2 13.1 M13.8 9.9 L18 5.7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-            <path d="M12 8 L15 12 L12 16 L9 12 Z" fill="currentColor" />
-          </svg>
+          <img
+            src={tripwireLogo}
+            alt="Tripwire"
+            className="brand-mark-logo"
+          />
         </div>
         <div>
           <div className="brand-name">Tripwire</div>
@@ -51,9 +43,7 @@ export function Sidebar({
 
       <SidebarNav
         activeId={activeSection}
-        openCaseCount={openCaseCount}
         dryRun={health ? health.dry_run !== false : true}
-        onOpenSettings={onOpenSettings}
         page={page}
         onNavigatePage={onNavigatePage}
         fsMonitorAlive={!!health?.fs_monitor_alive}

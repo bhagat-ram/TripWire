@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, RefreshCw, Radar, ChevronLeft, ChevronRight, Trash2, Square } from "lucide-react";
+import { AlertTriangle, RefreshCw, Radar, ChevronLeft, ChevronRight, Trash2, Square, List, Users } from "lucide-react";
 import { EventRow } from "./EventRow";
+import { ProcessClusters } from "./ProcessClusters";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50];
 
@@ -23,6 +24,7 @@ export function ActivityFeed({
 }) {
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
   const [page, setPage] = useState(1);
+  const [view, setView] = useState("list"); // "list" | "clusters"
 
   const totalPages = Math.max(1, Math.ceil(filteredEvents.length / pageSize));
 
@@ -50,7 +52,11 @@ export function ActivityFeed({
       <div className="section-heading">
         <div>
           <h2>Recent activity</h2>
-          <p>Events will appear here as they are detected.</p>
+          <p>
+            {view === "clusters"
+              ? "Touches grouped by process — the shape of what each actor did, not just a raw log."
+              : "Events will appear here as they are detected."}
+          </p>
         </div>
 
         <div className="activity-controls">
@@ -69,20 +75,39 @@ export function ActivityFeed({
             </button>
           </div>
 
-          <div className="density-toggle">
+          <div className="density-toggle" title="Group events by process to see attacker behavior patterns">
             <button
-              className={density === "comfortable" ? "active" : ""}
-              onClick={() => onSetDensity("comfortable")}
+              className={view === "list" ? "active" : ""}
+              onClick={() => setView("list")}
             >
-              Comfortable
+              <List size={11} />
+              Timeline
             </button>
             <button
-              className={density === "compact" ? "active" : ""}
-              onClick={() => onSetDensity("compact")}
+              className={view === "clusters" ? "active" : ""}
+              onClick={() => setView("clusters")}
             >
-              Compact
+              <Users size={11} />
+              By process
             </button>
           </div>
+
+          {view === "list" && (
+            <div className="density-toggle">
+              <button
+                className={density === "comfortable" ? "active" : ""}
+                onClick={() => onSetDensity("comfortable")}
+              >
+                Comfortable
+              </button>
+              <button
+                className={density === "compact" ? "active" : ""}
+                onClick={() => onSetDensity("compact")}
+              >
+                Compact
+              </button>
+            </div>
+          )}
 
           {simulationRunning ? (
             <button
@@ -136,13 +161,15 @@ export function ActivityFeed({
       </div>
 
       <div className="activity-card">
-        <div className="activity-table-header">
-          <span>Event</span>
-          <span>Resource</span>
-          <span>Process</span>
-          <span>Time</span>
-          <span />
-        </div>
+        {view === "list" && (
+          <div className="activity-table-header">
+            <span>Event</span>
+            <span>Resource</span>
+            <span>Process</span>
+            <span>Time</span>
+            <span />
+          </div>
+        )}
 
         {filteredEvents.length === 0 ? (
           <div className="empty-activity">
@@ -156,6 +183,8 @@ export function ActivityFeed({
               Detected touches will appear here in real time.
             </p>
           </div>
+        ) : view === "clusters" ? (
+          <ProcessClusters events={filteredEvents} onSelectEvent={onSelectEvent} focusEventId={focusEventId} />
         ) : (
           <>
             <div className="event-list">

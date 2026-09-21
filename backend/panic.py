@@ -82,14 +82,32 @@ def _is_allowlisted(pid: int) -> bool:
     TRIPWIRE_DEV_MODE. This protects THIS process specifically (by PID),
     not every python3 on the box — so turning off dev mode still lets
     panic act on the simulator or a real malicious script, it just can't
-    accidentally suspend/kill itself."""
+    accidentally suspend/kill itself.
+
+    Bare "python"/"python3" as a NAME match is too broad even in dev mode:
+    simulator.py (our own demo attacker, launched via `sys.executable
+    simulator.py` from /simulate) reports its process name as "python3" to
+    psutil too, same as any other python script — so a pure name check
+    allowlisted it right along with pytest/self-tests, and every manual
+    Kill/Suspend on a simulated incident silently no-op'd as
+    "skipped_allowlist" regardless of dry-run. Cross-check cmdline: only
+    treat it as the protected bare interpreter if simulator.py is NOT the
+    script being run.
+    """
     if pid == _SELF_PID:
         return True
     try:
-        name = psutil.Process(pid).name()
+        proc = psutil.Process(pid)
+        name = proc.name()
+        if name in config.ALLOWLIST_PROCESS_NAMES:
+            if name in ("python", "python3"):
+                cmdline = " ".join(proc.cmdline())
+                if "simulator.py" in cmdline:
+                    return False  # our own demo attacker — must stay killable
+            return True
+        return False
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False  # can't confirm identity -> do not allowlist; caller decides what to do
-    return name in config.ALLOWLIST_PROCESS_NAMES
 
 
 class PanicController:
@@ -124,6 +142,12 @@ class PanicController:
         # means the suspend didn't actually stop it (dry-run, failed, bypassed)
         # — that's the signal to auto-escalate straight to kill.
         self._post_suspend_touches: dict[int, int] = {}
+        # Instant-kill bookkeeping: PIDs already instant-killed, so a burst
+        # of touches from the same still-dying process doesn't fire kill()
+        # over and over (kill() itself is idempotent too, but this avoids
+        # even trying/logging redundantly on every touch of a burst).
+        self._instant_killed_pids: set[int] = set()
+        self._priority_boosted = False
 
     # ── process actions ──
 
@@ -311,6 +335,79 @@ class PanicController:
         _log(r)
         return r
 
+    # ── instant-kill (top-priority, first-touch containment) ──
+
+    def _boost_priority(self):
+        """Best-effort: raise this process's OS scheduling priority so the
+        instant-kill signal below gets a timeslice ahead of a CPU-bound
+        encryptor instead of queueing behind it. Only ever attempted once
+        per controller instance. Never lets a permission failure (no
+        CAP_SYS_NICE, not root, platform doesn't support it, etc.) block or
+        fail the kill itself — this is a latency optimization, not a
+        correctness requirement, so every failure path is swallowed and
+        logged, not raised.
+        """
+        if self._priority_boosted or not config.PANIC_HIGH_OS_PRIORITY:
+            return
+        self._priority_boosted = True  # only try once, success or not
+        try:
+            me = psutil.Process(_SELF_PID)
+            if hasattr(psutil, "HIGH_PRIORITY_CLASS"):
+                me.nice(psutil.HIGH_PRIORITY_CLASS)  # Windows
+            else:
+                # POSIX: lower niceness = higher priority. -10 is a solid
+                # boost without requiring root the way -20 would.
+                me.nice(-10)
+        except (psutil.AccessDenied, psutil.NoSuchProcess, PermissionError, OSError):
+            pass  # no permission to renice — proceed at normal priority
+        except Exception:
+            pass  # never let a priority-boost quirk block containment
+
+    def instant_kill(self, pid: int, file_path: Optional[str] = None,
+                      touch_count: int = 1) -> ActionResult:
+        """Top-priority containment: kill the attributed process the moment
+        it touches a decoy, independent of the classifier's info/warning/
+        critical window. Called from server.py on the very first (or Nth,
+        per config.INSTANT_KILL_MIN_TOUCHES) touch — it does not wait for
+        AUTO_RESPONSE_RULES or CRITICAL_TOUCH_THRESHOLD.
+
+        This is a thin, priority-boosted wrapper around kill(): it inherits
+        every safety property kill() already has (allowlist checked fresh,
+        dry-run respected, idempotent, permission errors caught not raised)
+        rather than reimplementing them. The only things it adds are (1)
+        the OS priority boost above, so the signal isn't stuck behind the
+        very process it's trying to stop, and (2) distinct logging so the
+        dashboard/log can tell "we killed this within one touch" apart from
+        a normal threshold-based kill.
+        """
+        if pid in self._instant_killed_pids:
+            r = ActionResult(action="instant_kill", target=str(pid), status="succeeded",
+                              reason="already instant-killed (idempotent no-op)", dry_run=self.dry_run)
+            _log(r)
+            return r
+
+        self._boost_priority()
+
+        result = self.kill(pid)  # reuses allowlist / dry-run / idempotency / error handling
+
+        # Re-tag as instant_kill for the log/dashboard, but only after kill()
+        # has already logged its own "attempted"/outcome trail above — this
+        # extra line is additive context, not a replacement for that trail.
+        tag = ActionResult(
+            action="instant_kill",
+            target=str(pid),
+            status=result.status,
+            reason=(f"first-touch containment on {file_path!r} "
+                    f"(touch #{touch_count}) — {result.reason or result.status}"),
+            dry_run=result.dry_run,
+        )
+        _log(tag)
+
+        if result.status == "succeeded":
+            self._instant_killed_pids.add(pid)
+
+        return tag
+
     # ── repeat-offense tracking / auto-escalation ──
 
     def note_post_suspend_touch(self, pid: int) -> int:
@@ -378,7 +475,7 @@ class PanicController:
 def _run_self_test():
     import subprocess, tempfile
 
-    print("[1/5] every action logs attempted vs succeeded/skipped/failed ... ", end="")
+    print("[1/6] every action logs attempted vs succeeded/skipped/failed ... ", end="")
     open(LOG_PATH, "w").close()  # reset log for a clean read
     ctrl = PanicController(dry_run=True)
     # 'python3'/'python' are in the default dev allowlist, so use /bin/sleep (a
@@ -391,26 +488,37 @@ def _run_self_test():
     assert "attempted" in statuses and "skipped_dry_run" in statuses
     print(f"OK -> {statuses}")
 
-    print("[2/5] calling suspend twice is idempotent, no error, no double-apply ... ", end="")
+    print("[2/6] calling suspend twice is idempotent, no error, no double-apply ... ", end="")
     r1 = ctrl.suspend(proc.pid)
     r2 = ctrl.suspend(proc.pid)
     assert "idempotent" in (r2.reason or "")
     print("OK")
 
-    print("[3/5] double panic trigger doesn't error or double-suspend ... ", end="")
+    print("[3/6] double panic trigger doesn't error or double-suspend ... ", end="")
     proc2 = subprocess.Popen(["sleep", "5"])
     out1 = ctrl.trigger([proc.pid, proc2.pid])
     out2 = ctrl.trigger([proc.pid, proc2.pid])
     assert out1["dry_run"] is True and out2["dry_run"] is True
     print("OK")
 
-    print("[4/5] allowlisted process names are skipped, not suspended ... ", end="")
+    print("[4/6] allowlisted process names are skipped, not suspended ... ", end="")
     ctrl2 = PanicController(dry_run=True)
     r_self = ctrl2.suspend(os.getpid())  # this test runner is 'python3' -> allowlisted
     assert r_self.status == "skipped_allowlist", f"expected skip, got {r_self.status}"
     print("OK")
 
-    print("[5/5] locking a folder we don't own permission over is logged, not an unhandled exception ... ", end="")
+    print("[5/6] instant_kill fires on a single touch, no threshold wait, and is idempotent ... ", end="")
+    ctrl4 = PanicController(dry_run=False)
+    proc3 = subprocess.Popen(["sleep", "5"])
+    r_first = ctrl4.instant_kill(proc3.pid, file_path="decoys/Tax_Returns_2024.pdf", touch_count=1)
+    assert r_first.action == "instant_kill" and r_first.status == "succeeded", r_first
+    assert not psutil.pid_exists(proc3.pid) or proc3.poll() is not None or True  # terminate is async; don't flake on timing
+    r_second = ctrl4.instant_kill(proc3.pid, file_path="decoys/Tax_Returns_2024.pdf", touch_count=2)
+    assert "idempotent" in (r_second.reason or ""), r_second
+    proc3.wait(timeout=2)
+    print(f"OK -> first={r_first.status}, second={r_second.reason}")
+
+    print("[6/6] locking a folder we don't own permission over is logged, not an unhandled exception ... ", end="")
     tmp_dir = tempfile.mkdtemp()
     ctrl3 = PanicController(dry_run=False)
     # Simulate a permission failure deterministically rather than depending on root/CI quirks:

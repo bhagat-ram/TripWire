@@ -143,20 +143,34 @@ let _nextFsAuditClientId = 1;
  * mapTripwireEvent — the full-system audit trail carries no severity,
  * attribution, or MITRE mapping, only who opened what.
  */
+const FS_ACTION_LABELS = {
+  modified: "Modified",
+  deleted: "Deleted",
+  renamed: "Renamed / Moved",
+};
+
 export function mapFsOpenEvent(raw) {
   const ts = raw.ts ? new Date(raw.ts * 1000) : new Date();
+  const action = raw.action || "modified";
   return {
     // /fs-audit rows (and live fs_open payloads) don't carry a stable
     // backend id the way /events rows do — this buffer is in-memory only
     // on the server too, so a client-generated id is fine here.
     id: `${ts.getTime()}-${_nextFsAuditClientId++}`,
-    pid: raw.pid ?? "—",
+    // inotify has no way to learn the originating PID (see
+    // fanotify_watcher.py's _fallback_event) and marks this explicitly with
+    // pid=-1 rather than omitting the field — surface that as "unavailable"
+    // instead of a literal -1 so the row still makes sense on either backend.
+    pid: raw.pid != null && raw.pid !== -1 ? raw.pid : "—",
+    pidUnavailable: raw.pid === -1,
     process: raw.process_name || "unknown",
     exePath: raw.exe_path || null,
     resource: raw.file_path,
     filename: raw.file_path?.split(/[\\/]/).pop() || raw.file_path,
     time: ts.toLocaleTimeString(),
     receivedAt: Date.now(),
+    action,
+    actionLabel: FS_ACTION_LABELS[action] || "Changed",
   };
 }
 

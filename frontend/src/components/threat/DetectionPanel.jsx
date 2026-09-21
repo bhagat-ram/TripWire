@@ -25,11 +25,6 @@ const STATUS_COPY = {
   dismissed: { title: () => "Marked as false positive", icon: ShieldOff, statusClass: "" },
 };
 
-// Worst (least certain) confidence wins — same convention the incident
-// queue and analysis tree use, so a case's headline attribution reflects
-// the least confident touch in its evidence trail, not just the latest.
-const CONFIDENCE_RANK = { unknown: 0, ambiguous: 1, high: 2 };
-
 const CONFIDENCE_META = {
   high: {
     label: "High",
@@ -107,22 +102,8 @@ export function DetectionPanel({ incident, events, thresholds, thresholdUpdateEr
       .sort((a, b) => (a.receivedAt ?? 0) - (b.receivedAt ?? 0));
   }, [incident, events]);
 
-  const caseConfidenceCounts = useMemo(() => confidenceCounts(evidence), [evidence]);
-  const worstCaseConfidence = evidence.reduce((worst, e) => {
-    const conf = e.attributionConfidence;
-    if (!conf) return worst;
-    if (!worst || CONFIDENCE_RANK[conf] < CONFIDENCE_RANK[worst]) return conf;
-    return worst;
-  }, null);
-
   const caseTechniques = useMemo(() => techniqueCounts(evidence), [evidence]);
 
-  // First evidence row that pushed the running touch count at/over each
-  // configured threshold — the exact moment the case would have opened
-  // (warning) or escalated (critical) under the *current* slider values,
-  // not just whatever thresholds were live when the event first arrived.
-  const warningCrossedAt = evidence.find((e) => (e.touchCount ?? 0) >= local.warning);
-  const criticalCrossedAt = evidence.find((e) => (e.touchCount ?? 0) >= local.critical);
 
   // Detection-engine-wide stats — meaningful even with no case selected,
   // since it reflects everything the classifier/attribution pipeline has
@@ -183,43 +164,8 @@ export function DetectionPanel({ incident, events, thresholds, thresholdUpdateEr
 
       {incident && (
         <div className="detection-depth-grid">
-          {/* ── Attribution confidence for this case ── */}
-          <div className="detection-subpanel">
-            <div className="detection-subpanel-title">
-              <ShieldCheck size={11} />
-              Attribution confidence
-            </div>
-
-            {worstCaseConfidence ? (
-              <>
-                <div className={`confidence-headline ${CONFIDENCE_META[worstCaseConfidence].className}`}>
-                  {(() => {
-                    const Icon = CONFIDENCE_META[worstCaseConfidence].icon;
-                    return <Icon size={13} />;
-                  })()}
-                  <span>{CONFIDENCE_META[worstCaseConfidence].label} confidence (worst touch in trail)</span>
-                </div>
-                <p className="detection-subpanel-hint">{CONFIDENCE_META[worstCaseConfidence].hint}</p>
-              </>
-            ) : (
-              <p className="detection-subpanel-hint">No attribution data on this case's evidence yet.</p>
-            )}
-
-            <div className="analysis-stat-chips">
-              <span className="confidence-chip confidence-high" title={CONFIDENCE_META.high.hint}>
-                {caseConfidenceCounts.high} high
-              </span>
-              <span className="confidence-chip confidence-ambiguous" title={CONFIDENCE_META.ambiguous.hint}>
-                {caseConfidenceCounts.ambiguous} ambiguous
-              </span>
-              <span className="confidence-chip confidence-unknown" title={CONFIDENCE_META.unknown.hint}>
-                {caseConfidenceCounts.unknown} unknown
-              </span>
-            </div>
-          </div>
-
           {/* ── Techniques observed in this case ── */}
-          <div className="detection-subpanel">
+          <div className="detection-subpanel detection-subpanel-wide">
             <div className="detection-subpanel-title">
               <Radar size={11} />
               Techniques observed
@@ -244,44 +190,6 @@ export function DetectionPanel({ incident, events, thresholds, thresholdUpdateEr
                 })}
               </div>
             )}
-          </div>
-
-          {/* ── Case timeline ── */}
-          <div className="detection-subpanel detection-subpanel-wide">
-            <div className="detection-subpanel-title">
-              <Zap size={11} />
-              Case timeline ({evidence.length} touch{evidence.length === 1 ? "" : "es"})
-            </div>
-
-            <div className="case-timeline">
-              {evidence.map((e) => {
-                const confMeta = e.attributionConfidence && CONFIDENCE_META[e.attributionConfidence];
-                return (
-                  <div key={e.id} className="case-timeline-row">
-                    <span className="case-timeline-time">{e.time}</span>
-                    <span className={`confidence-dot ${confMeta ? confMeta.className : "confidence-unknown"}`} />
-                    <span className={`case-timeline-sev sev-${e.severityRaw || "info"}`}>{e.type}</span>
-                    <span className="case-timeline-resource">{e.resource}</span>
-                    <span className="case-timeline-touch">{e.touchCount ?? "—"} touches</span>
-
-                    {warningCrossedAt?.id === e.id && (
-                      <span className="case-timeline-flag flag-warning">Warning threshold crossed</span>
-                    )}
-                    {criticalCrossedAt?.id === e.id && (
-                      <span className="case-timeline-flag flag-critical">Critical threshold crossed</span>
-                    )}
-                  </div>
-                );
-              })}
-
-              {incident.escalated && (
-                <div className="case-timeline-row case-timeline-escalation">
-                  <span className="case-timeline-flag flag-critical">
-                    <Zap size={9} /> Auto-escalated to kill after repeat post-suspend activity
-                  </span>
-                </div>
-              )}
-            </div>
           </div>
         </div>
       )}
