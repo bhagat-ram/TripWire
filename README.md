@@ -1,4 +1,4 @@
-# 🪤 Tripwire
+# 🪤 Tripwire 
 
 **Tripwire is a decoy-file intrusion detection system.** It scatters fake
 "sensitive" files (SSNs, tax returns, VPN configs, board minutes...) across
